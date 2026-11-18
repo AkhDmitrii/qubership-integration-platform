@@ -125,6 +125,14 @@ func ValidateCandidate(ctx context.Context, plan Plan, runDir, sourcePath string
 	if c.Report.Request.TaskID != cfg.TaskID || c.Report.Request.Kind != "documentation" || c.Report.Error != "" || c.Report.Question != nil || (c.Report.Status != "docs-no-change" && c.Report.Status != "docs-ready-for-pr") {
 		return c, fmt.Errorf("work did not complete this documentation task")
 	}
+	author := cfg.Workflow == string(doccycle.AuthorStage)
+	if author != (c.Report.Workflow == string(doccycle.AuthorStage)) {
+		return c, fmt.Errorf("documentation workflow differs from the work configuration")
+	}
+	if author && (!cfg.Hosted || cfg.ResumeFrom != "" || cfg.ReviewProfile != nil || len(c.Report.ReviewDecisions) != 0 ||
+		!reflect.DeepEqual(cfg.RequiredChecks, doccycle.PublicationChecks()) || !reflect.DeepEqual(c.Report.Request.RequiredChecks, cfg.RequiredChecks)) {
+		return c, fmt.Errorf("hosted documentation publication requires a fresh author run with the configured checks")
+	}
 	if e := readJSON(filepath.Join(runDir, "context.json"), &contextPacket); e != nil {
 		return c, e
 	}
@@ -150,6 +158,9 @@ func ValidateCandidate(ctx context.Context, plan Plan, runDir, sourcePath string
 	}
 	if receipt.ReportSHA256 != bytesHash(reportBytes) || receipt.ContextSHA256 != contextPacket.SHA256 || receipt.CandidateID != c.Report.Candidate.ID {
 		return c, fmt.Errorf("completion receipt does not match work report")
+	}
+	if author && len(receipt.Prior) != 0 {
+		return c, fmt.Errorf("hosted documentation publication requires evidence from the author run")
 	}
 	hashes := map[string]string{}
 	for _, group := range []struct {
@@ -181,6 +192,19 @@ func ValidateCandidate(ctx context.Context, plan Plan, runDir, sourcePath string
 			}
 		}
 		return true
+	}
+	freshEvidence := func(root string) func([]string) bool {
+		return func(refs []string) bool {
+			if !evidence(refs) {
+				return false
+			}
+			for _, ref := range refs {
+				if !within(root, ref) {
+					return false
+				}
+			}
+			return true
+		}
 	}
 	var proof struct {
 		TaskID        string            `json:"task_id"`
@@ -284,6 +308,12 @@ func ValidateCandidate(ctx context.Context, plan Plan, runDir, sourcePath string
 	if snapshot.ID != c.Report.Candidate.ID || !samePaths(snapshot.ChangedPaths, c.Report.Candidate.ChangedPaths) {
 		return c, fmt.Errorf("actual candidate differs from verified snapshot")
 	}
+	if author && entry.Route != "docs-no-change" {
+		root := filepath.Join(cfg.OutputDirectory, "evidence", fmt.Sprintf("step-0001-%s", doccycle.AuthorStage))
+		if e := doccycle.ValidateAuthorCompletion(c.Report, freshEvidence(root)); e != nil {
+			return c, e
+		}
+	}
 	doc := c.Report.Documentation
 	if doc == nil || doccycle.ValidateDocumentation(doc) != nil || len(doc.Claims) == 0 {
 		return c, fmt.Errorf("missing documentation conclusion")
@@ -303,7 +333,7 @@ func ValidateCandidate(ctx context.Context, plan Plan, runDir, sourcePath string
 			if cfg.ResumeFrom != "" || len(c.Report.Observations) != 0 || entry.Decision == nil || !reflect.DeepEqual(entry.Decision, doc) || routing.Recommendation.Action != "no_change" || routing.Recommendation.Reason != doc.Reason || routing.Recommendation.Attribution != "unchanged" {
 				return c, fmt.Errorf("automatic no-change report differs from the controller decision")
 			}
-		} else {
+		} else if !author {
 			if entry.Decision != nil || len(c.Report.Observations) != 1 || (entry.Route != "docs-assess" && entry.Route != "docs-write") {
 				return c, fmt.Errorf("no-change completion requires its native observation")
 			}
@@ -319,17 +349,7 @@ func ValidateCandidate(ctx context.Context, plan Plan, runDir, sourcePath string
 				}
 				evidenceRoot = filepath.Join(filepath.Dir(cfg.ResumeFrom), "evidence", "step-0001-docs-assess")
 			}
-			fresh := func(refs []string) bool {
-				if !evidence(refs) {
-					return false
-				}
-				for _, ref := range refs {
-					if !within(evidenceRoot, ref) {
-						return false
-					}
-				}
-				return true
-			}
+			fresh := freshEvidence(evidenceRoot)
 			if !fresh(declaration.Evidence) {
 				return c, fmt.Errorf("native no-change evidence was not produced by its stage")
 			}
@@ -379,7 +399,7 @@ func ValidateCandidate(ctx context.Context, plan Plan, runDir, sourcePath string
 			}
 		}
 	}
-	if !review || !verify {
+	if !author && (!review || !verify) {
 		return c, fmt.Errorf("candidate lacks matching review and verification")
 	}
 	for _, name := range snapshot.ChangedPaths {

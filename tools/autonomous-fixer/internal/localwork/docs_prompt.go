@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/doccycle"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/doctriage"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcycle"
 )
@@ -22,10 +23,22 @@ func documentationPrompt(inv workcycle.Invocation, evidence, base string) string
 	if inv.Stage == "docs-write" && inv.Documentation == nil {
 		stages[inv.Stage] = "Investigate the whole issue and the alleged help gap, then make the smallest necessary help/docs change in this same session. The Jev recommendation is a hypothesis, not a requirement to produce a patch. Read the implementing before/after changes, current consumers, whole affected help sections, and cross-references. Return claims with fresh source/help evidence, attribution, and needs_change. Keep old independent defects in separate_findings. If current help is sufficient, return decision no_change, a valid reason, and an English issue_comment without changing any source or help file. If an edit is needed, return needed with missing_guidance or stale_guidance, the changed claims, and a Conventional Commits PR title/body using Related #N. Edit only existing help pages. Return a structured question when genuinely blocked or a new page/section needs an owner decision. Run focused checks as you edit. The controller runs an independent review and final checks after a needed result."
 	}
+	sessionScope := "This controller owns the stage order and review sessions."
+	claimGuidance := "When controller input contains documentation claims, preserve EVERY incoming claim ID, attribution, needs_change value, and collection (claims or separate_findings) in any returned documentation declaration. This includes already-covered behavior and unaffected consumers that need no edit. Keep their no-change action and refresh their evidence. Preserve separate_findings with fresh evidence, without adding their fixes to the patch. Add claims when necessary, but never silently drop an existing one. Protocol findings about a missing claim require correcting the declaration even when the text patch is already correct."
+	routingGuidance := "The controller selects the entry stage. A direct docs-write entry combines the initial investigation and the edit; a docs-assess entry performs the investigation separately."
+	if inv.Stage == doccycle.AuthorStage {
+		sessionScope = "Complete the investigation, any needed edit, and your own final checks in this session."
+		claimGuidance = "Include source and help evidence for each changed behavior and any affected consumer whose guidance remains accurate. Record unrelated older documentation defects in separate_findings."
+		routingGuidance = "The Jev route and recommendation are advisory inputs. Inspect the implementation and current help before deciding whether to make an edit."
+		stages[inv.Stage] = `Read the issue, merged changes, and relevant source. Inspect affected help sections, cross-references, and consumers. Resolve uncertainty by investigating the checkout and task attachments.
+If help needs a change, make the smallest correction on existing pages under help/docs. Apply the documentation style rules. Run all required checks on the final patch, including the help index build. Record each check's command, result, and relevant output under the evidence directory. Fix issues you find and rerun affected checks in this session. Return the final decision, claims, checks, and a Conventional Commits PR title and body with Related #N.
+If current help is sufficient, leave the checkout unchanged and return the no_change decision, evidence, and an English issue comment. Omit patch checks for that outcome.
+Return a structured question when evidence, verification, or a decision about a new page or section is missing. Report evidence for the blocker.`
+	}
 	return fmt.Sprintf(`You are executing one stage of a controller-owned QIP documentation task.
 %s
 
-The project guidance below is provided in full. The frozen issue and merged-change packet replace GitHub reads for this local test. Read their complete contents from the named files. Apply docs-authoring and English wording conventions. Current committed source and help are the authority for shipped behavior; a historic diff or issue title alone is insufficient. This controller owns the stage order and review sessions. Do not delegate or launch another model. Do not modify product code, run the product stack without a task-specific verification need, commit, push, comment, change labels/status, or create a pull request in GitHub. Save the result locally. Existing doctrine requiring a patch or product A/B for a code fix does not apply to a no-change documentation outcome. Do not ask a chat-only question and continue waiting: return the structured question below when blocked.
+The project guidance below is provided in full. The frozen issue and merged-change packet provide the GitHub evidence for this task. Read their complete contents from the named files. Apply docs-authoring and English wording conventions. Current committed source and help are the authority for shipped behavior; a historic diff or issue title alone is insufficient. %s Do not delegate or launch another model. Do not modify product code, run the product stack without a task-specific verification need, commit, push, comment, change labels/status, or create a pull request in GitHub. Save the result locally. Existing doctrine requiring a patch or product A/B for a code fix does not apply to a no-change documentation outcome. Do not ask a chat-only question and continue waiting: return the structured question below when blocked.
 
 %s
 
@@ -36,16 +49,16 @@ Source base commit: %s
 Current stage: %s
 %s
 
-When controller input contains documentation claims, preserve EVERY incoming claim ID, attribution, needs_change value, and collection (claims or separate_findings) in any returned documentation declaration. This includes already-covered behavior and unaffected consumers that need no edit. Keep their no-change action and refresh their evidence. Preserve separate_findings with fresh evidence, without adding their fixes to the patch. Add claims when necessary, but never silently drop an existing one. Protocol findings about a missing claim require correcting the declaration even when the text patch is already correct.
+%s
 
 Write fresh evidence under %s. Every returned evidence reference, including claim source_evidence and documentation_evidence, must name a nonempty file under this invocation's evidence directory. Record source/doc paths and line numbers or permalinks INSIDE those files. Earlier evidence under %s may inform investigation, but return fresh measurements and notes. All generated reports/scripts/check output belong outside the checkout.
 
 Return exactly one JSON object, without a Markdown fence. Allowed fields: documentation, findings, question, checks, evidence. The controller attaches candidate identity from its own snapshot; do not transcribe or calculate a candidate hash. Documentation shape:
 {"decision":"needed|no_change|investigate","reason":"reason from the allowed pairs below","summary":"specific conclusion","claims":[{"id":"claim-id","behavior":"reader-visible behavior","attribution":"change_related|unchanged|unclear","needs_change":true,"source_evidence":["absolute current evidence file"],"documentation_evidence":["absolute current evidence file"],"action":"minimal change or precise no-change reason"}],"separate_findings":[{"id":"independent-finding-id","behavior":"unrelated older documentation error","attribution":"preexisting_independent","needs_change":true,"source_evidence":["absolute current evidence file"],"documentation_evidence":["absolute current evidence file"],"action":"record for separate triage"}],"pr_title":"...","pr_body":"...","issue_comment":"..."}.
-Allowed decision/reason pairs: needed uses missing_guidance or stale_guidance; no_change uses already_covered, restored_behavior, no_explanation_needed, internal_only, outside_help_scope, or preexisting_only; investigate uses insufficient_evidence or scope_unclear. Needed requires at least one change_related claim with needs_change=true. A no_change decision has no main claim needing a change, even when separate_findings contains an older defect. Unclear main-claim attribution requires investigate. The controller selects the entry stage. A direct docs-write entry combines the initial investigation and the edit; a docs-assess entry performs the investigation separately.
+Allowed decision/reason pairs: needed uses missing_guidance or stale_guidance; no_change uses already_covered, restored_behavior, no_explanation_needed, internal_only, outside_help_scope, or preexisting_only; investigate uses insufficient_evidence or scope_unclear. Needed requires at least one change_related claim with needs_change=true. A no_change decision has no main claim needing a change, even when separate_findings contains an older defect. Unclear main-claim attribution requires investigate. %s
 Findings: [{"id":"...","location":"help/docs/path/readme.md:line","scenario_id":"claim-id","description":"reproducible problem","evidence":["absolute current evidence file"]}].
 Checks: [{"id":"exact configured check id","outcome":"pass|fail","evidence":["absolute current evidence file"]}].
 Question when blocked: {"kind":"needs-human|verification-blocked","text":"specific question","needed":"answer, access, or owner decision needed","evidence":["absolute current evidence file"]}.
 Omit unused optional fields. Never report an unavailable check as passed. A no-change decision is a valid successful documentation result and does not require a synthetic edit.
-`, doctriage.HelpScope, guidance, input, base, inv.Stage, stages[inv.Stage], evidence, filepath.Dir(evidence))
+`, doctriage.HelpScope, sessionScope, guidance, input, base, inv.Stage, stages[inv.Stage], claimGuidance, evidence, filepath.Dir(evidence), routingGuidance)
 }

@@ -46,7 +46,6 @@ type Driver struct {
 	priorEvidence        string
 	resume               *workcycle.Report
 	triageProofHash      string
-	providerUsage        *openrouterusage.Recorder
 }
 
 func (d *Driver) Run(ctx context.Context, inv workcycle.Invocation) (response workcycle.Response, err error) {
@@ -132,11 +131,9 @@ func (d *Driver) Run(ctx context.Context, inv workcycle.Invocation) (response wo
 		defer os.Remove(filepath.Join(home, ".codex", "auth.json"))
 	}
 	var stopRelay func()
+	var providerUsage openrouterusage.Recorder
 	if d.Config.Hosted && inv.Request.Kind == "documentation" {
-		if d.providerUsage == nil {
-			d.providerUsage = &openrouterusage.Recorder{}
-		}
-		relayURL, stop, relayErr := startOpenRouterRelay(strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")), d.providerUsage, runtimeConfig.Profile)
+		relayURL, stop, relayErr := startOpenRouterRelay(strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")), &providerUsage, runtimeConfig.Profile)
 		if relayErr != nil {
 			return response, relayErr
 		}
@@ -153,7 +150,7 @@ func (d *Driver) Run(ctx context.Context, inv workcycle.Invocation) (response wo
 		stopRelay()
 		observed, _ := agentsignature.ReadIdentity(dir, runtimeConfig.Profile.Runtime)
 		err = errors.Join(
-			writeJSON(filepath.Join(d.Config.OutputDirectory, openrouterusage.Filename), d.providerUsage.Report()),
+			writeJSON(filepath.Join(d.Config.OutputDirectory, openrouterusage.Filename), providerUsage.Report()),
 			writeJSON(filepath.Join(dir, agentsignature.IdentityFilename), observed),
 		)
 		if err != nil {

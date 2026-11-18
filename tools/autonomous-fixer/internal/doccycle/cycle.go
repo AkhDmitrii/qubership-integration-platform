@@ -24,20 +24,7 @@ var question = errors.New("documentation cycle requires input")
 
 func Run(ctx context.Context, req workcycle.Request, d workcycle.Driver) (report workcycle.Report, err error) {
 	report = workcycle.Report{Request: clone(req), Status: "rejected"}
-	defer func() {
-		if errors.Is(err, question) {
-			err = nil
-		}
-		if err != nil {
-			report.Status = "rejected"
-			report.Error = err.Error()
-		}
-		if e := d.Save(context.WithoutCancel(ctx), report); e != nil {
-			err = errors.Join(err, e)
-			report.Status = "rejected"
-			report.Error = err.Error()
-		}
-	}()
+	defer func() { finishReport(ctx, d, &report, &err) }()
 	if strings.TrimSpace(req.TaskID) == "" || strings.TrimSpace(req.Task) == "" || strings.TrimSpace(req.Context) == "" {
 		return report, errors.New("incomplete documentation request")
 	}
@@ -310,6 +297,21 @@ func Run(ctx context.Context, req workcycle.Request, d workcycle.Driver) (report
 		if e = write(findings, nil); e != nil {
 			return report, e
 		}
+	}
+}
+
+func finishReport(ctx context.Context, d workcycle.Driver, report *workcycle.Report, err *error) {
+	if errors.Is(*err, question) {
+		*err = nil
+	}
+	if *err != nil {
+		report.Status = "rejected"
+		report.Error = (*err).Error()
+	}
+	if saveErr := d.Save(context.WithoutCancel(ctx), *report); saveErr != nil {
+		*err = errors.Join(*err, saveErr)
+		report.Status = "rejected"
+		report.Error = (*err).Error()
 	}
 }
 

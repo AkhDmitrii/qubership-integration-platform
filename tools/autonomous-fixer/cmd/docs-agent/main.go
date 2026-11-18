@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/doccycle"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/docfeedback"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/docgithub"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/docpacket"
@@ -20,7 +21,6 @@ import (
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/jev"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/localwork"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcontext"
-	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcycle"
 )
 
 func read(path string, target any) error {
@@ -77,8 +77,6 @@ func run(ctx context.Context, args []string) error {
 	runtimeVersion := f.String("runtime-version", "", "expected OpenCode version")
 	model := f.String("model", "", "OpenRouter author model")
 	effort := f.String("effort", "", "OpenCode author model variant")
-	reviewModel := f.String("review-model", "", "OpenRouter reviewer model")
-	reviewEffort := f.String("review-effort", "", "OpenCode reviewer model variant")
 	handoff := f.String("handoff", "", "new directory for a validated publication artifact")
 	keyFile := f.String("key-file", "", "private OpenRouter key file")
 	runDir := f.String("run", "", "completed work output directory")
@@ -181,13 +179,12 @@ func run(ctx context.Context, args []string) error {
 			}
 			cfg = localwork.Config{
 				Hosted: true, RuntimeBinary: *runtime, RuntimeVersion: *runtimeVersion,
-				Profile:       experimentruntime.Profile{Runtime: "opencode", Model: *model, Effort: *effort},
-				ReviewProfile: &experimentruntime.Profile{Runtime: "opencode", Model: *reviewModel, Effort: *reviewEffort},
+				Profile: experimentruntime.Profile{Runtime: "opencode", Model: *model, Effort: *effort},
 			}
 			if e := validateHostedRuntime(ctx, cfg); e != nil {
 				return e
 			}
-		} else if *runtime != "" || *runtimeVersion != "" || *model != "" || *effort != "" || *reviewModel != "" || *reviewEffort != "" || *handoff != "" {
+		} else if *runtime != "" || *runtimeVersion != "" || *model != "" || *effort != "" || *handoff != "" {
 			return fmt.Errorf("runtime and handoff flags require hosted work")
 		}
 		if *handoff != "" && !filepath.IsAbs(*handoff) {
@@ -266,7 +263,7 @@ func run(ctx context.Context, args []string) error {
 		cfg.ResumeMode = ""
 		cfg.Context = workcontext.Selection{AttachmentsAsFiles: true, Instructions: []string{".agents/skills/english-developer-style/SKILL.md", "help/README.md"}, Attachments: []string{"packet.json", "jev-report.json", "plan.json"}}
 		cfg.DocumentationTriage = &localwork.DocumentationTriage{PacketPath: "packet.json", ReportPath: "jev-report.json"}
-		cfg.RequiredChecks = []workcycle.Check{{ID: "diff_scope", Scope: "help-only patch"}, {ID: "source_facts", Scope: "changed claims match source"}, {ID: "structure_links", Scope: "changed page structure and links"}, {ID: "documentation_index", Scope: "help index build"}}
+		cfg.RequiredChecks = doccycle.PublicationChecks()
 		result, e := localwork.Execute(ctx, cfg)
 		if e != nil {
 			return e
