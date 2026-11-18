@@ -26,6 +26,48 @@ func TestRESTControllerRecoversLostDispatchResponse(t *testing.T) {
 		t.Fatal("repeated accepted dispatch")
 	}
 }
+
+func TestRESTControllerRetriesDispatchReadbackWithoutRedispatch(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		missingID bool
+		readPath  string
+	}{
+		{"Run lookup returns 404", false, "/repos/org/repo/actions/runs/500"},
+		{"Workflow run list is empty", true, "/repos/org/repo/actions/workflows/agent-work.yaml/runs"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			api := testGitHubServer(t)
+			api.DispatchWithoutID, api.DispatchReadMisses = test.missingID, 2
+			controller := NewController(api.adapter(t))
+			result, err := controller.Handle(context.Background(), Event{Type: "fix", Actor: "alice", Source: Source{Kind: "comment", ID: 3, Action: "created"}})
+			if err != nil || result.Disposition != "accepted" || result.State.Effects[0].Status != "confirmed" || result.State.Effects[0].Result.RunID != 500 {
+				t.Fatalf("dispatch readback did not confirm the run: %+v %v", result, err)
+			}
+			if api.count("POST", "/repos/org/repo/actions/workflows/agent-work.yaml/dispatches") != 1 || api.count("GET", test.readPath) != 3 {
+				t.Fatal("the controller must retry only the observation", api.Trace)
+			}
+		})
+	}
+}
+
+func TestRESTControllerLeavesInvisibleAcceptedDispatchPending(t *testing.T) {
+	api := testGitHubServer(t)
+	api.DispatchReadMisses = 20
+	ctx := context.Background()
+	result, err := NewController(api.adapter(t)).Handle(ctx, Event{Type: "fix", Actor: "alice", Source: Source{Kind: "comment", ID: 3, Action: "created"}})
+	if err != nil || result.Disposition != "accepted" || result.State.Phase != "queued" || result.State.Effects[0].Status != "pending" {
+		t.Fatalf("accepted dispatch should wait for the run: %+v %v", result, err)
+	}
+	api.DispatchReadMisses = 0
+	result, err = NewController(api.adapter(t)).Reconcile(ctx)
+	if err != nil || result.Disposition != "reconciled" || result.State.Effects[0].Status != "confirmed" {
+		t.Fatalf("admission could not reconcile the late run: %+v %v", result, err)
+	}
+	if api.count("POST", "/repos/org/repo/actions/workflows/agent-work.yaml/dispatches") != 1 {
+		t.Fatal("reconciling a late run repeated the dispatch")
+	}
+}
 func TestRESTControllerRejectsDuplicateCanonicalComments(t *testing.T) {
 	api := testGitHubServer(t)
 	adapter := api.adapter(t)

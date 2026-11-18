@@ -3,9 +3,12 @@ package fixer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 type GitHubAdapter struct {
@@ -91,34 +94,33 @@ func (a *GitHubAdapter) runFor(ctx context.Context, execution Execution) (*Workf
 	if hint == 0 {
 		hint = a.dispatched[execution.ID]
 	}
-	var runs []WorkflowRun
+	expected := a.expected(execution)
 	if hint != 0 {
 		var run WorkflowRun
 		if err := a.Client.Request(ctx, "GET", fmt.Sprintf("/actions/runs/%d", hint), nil, &run); err != nil {
 			return nil, err
 		}
-		runs = append(runs, run)
-	} else {
-		raw, err := a.Client.List(ctx, "/actions/workflows/agent-work.yaml/runs?event=workflow_dispatch", "workflow_runs")
-		if err != nil {
-			return nil, err
+		expected.RunID = hint
+		if !MatchWorkerRun(run, expected) {
+			return nil, fmt.Errorf("worker run provenance does not match the dispatch")
 		}
-		for _, data := range raw {
-			var run WorkflowRun
-			if err := json.Unmarshal(data, &run); err != nil {
-				return nil, err
-			}
-			runs = append(runs, run)
-		}
+		return &run, nil
+	}
+	raw, err := a.Client.List(ctx, "/actions/workflows/agent-work.yaml/runs?event=workflow_dispatch", "workflow_runs")
+	if err != nil {
+		return nil, err
 	}
 	var found *WorkflowRun
-	for _, run := range runs {
-		if MatchWorkerRun(run, a.expected(execution)) {
+	for _, data := range raw {
+		var run WorkflowRun
+		if err := json.Unmarshal(data, &run); err != nil {
+			return nil, err
+		}
+		if MatchWorkerRun(run, expected) {
 			if found != nil {
 				return nil, fmt.Errorf("multiple runs match the execution")
 			}
-			copy := run
-			found = &copy
+			found = &run
 		}
 	}
 	return found, nil
@@ -135,7 +137,7 @@ func (a *GitHubAdapter) Perform(ctx context.Context, effect Effect) error {
 		}
 		inputs := map[string]string{"issue": strconv.FormatInt(a.Task.IssueNumber, 10), "execution": execution.ID, "generation": strconv.Itoa(execution.Generation), "contract_version": strconv.Itoa(execution.ContractVersion), "trusted_sha": a.expected(*execution).TrustedSHA, "mode": executionMode(execution.Mode)}
 		err := a.Client.Request(ctx, "POST", "/actions/workflows/agent-work.yaml/dispatches", map[string]any{"ref": a.DefaultBranch, "return_run_details": true, "inputs": inputs}, &response)
-		if err == nil && response.RunID > 0 {
+		if err == nil {
 			if a.dispatched == nil {
 				a.dispatched = make(map[string]int64)
 			}
@@ -164,6 +166,33 @@ func (a *GitHubAdapter) Perform(ctx context.Context, effect Effect) error {
 		return fmt.Errorf("publication is disabled in the model-free prototype")
 	}
 }
+
+func (a *GitHubAdapter) observeAcceptedDispatch(ctx context.Context, execution Execution) (*WorkflowRun, error) {
+	readback, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for _, delay := range []time.Duration{0, 250 * time.Millisecond, 500 * time.Millisecond, time.Second} {
+		if delay > 0 {
+			select {
+			case <-readback.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		run, err := a.runFor(readback, execution)
+		if run != nil {
+			return run, nil
+		}
+		if readback.Err() != nil {
+			return nil, ctx.Err()
+		}
+		var response *HTTPError
+		if err != nil && (!errors.As(err, &response) || response.Status != http.StatusNotFound) {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
 func (a *GitHubAdapter) Observe(ctx context.Context, effect Effect) (Observation, error) {
 	execution, err := a.execution(effect.ExecutionID)
 	if err != nil {
@@ -172,7 +201,16 @@ func (a *GitHubAdapter) Observe(ctx context.Context, effect Effect) (Observation
 	if effect.Kind == "publish" {
 		return Observation{Status: "unknown"}, nil
 	}
-	run, err := a.runFor(ctx, *execution)
+	var run *WorkflowRun
+	_, acknowledged := a.dispatched[execution.ID]
+	if effect.Kind == "dispatch" && acknowledged {
+		run, err = a.observeAcceptedDispatch(ctx, *execution)
+		if err == nil && run == nil {
+			return Observation{Status: "pending"}, nil
+		}
+	} else {
+		run, err = a.runFor(ctx, *execution)
+	}
 	if err != nil {
 		return Observation{Status: "unknown"}, err
 	}

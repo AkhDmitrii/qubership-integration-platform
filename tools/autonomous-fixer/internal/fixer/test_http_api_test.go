@@ -24,6 +24,8 @@ type testAPI struct {
 	Artifacts            []map[string]any
 	Trace                []string
 	FailDispatchResponse bool
+	DispatchWithoutID    bool
+	DispatchReadMisses   int
 	CancellationPending  bool
 	CurrentSHA           string
 	Labels               map[string]bool
@@ -110,7 +112,7 @@ func (a *testAPI) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		http.NotFound(w, r)
 	case path == "/actions/workflows/agent-work.yaml/runs" || path == "/actions/runs":
-		if a.Runs == nil {
+		if a.Runs == nil || a.missDispatchedRun() {
 			write(map[string]any{"workflow_runs": []WorkflowRun{}})
 		} else {
 			write(map[string]any{"workflow_runs": a.Runs})
@@ -133,6 +135,10 @@ func (a *testAPI) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		if a.DispatchWithoutID {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		write(map[string]int64{"workflow_run_id": run.ID})
 	case strings.HasPrefix(path, "/actions/runs/") && strings.HasSuffix(path, "/artifacts"):
 		if a.Artifacts == nil {
@@ -153,6 +159,10 @@ func (a *testAPI) serve(w http.ResponseWriter, r *http.Request) {
 					a.Runs[i].Conclusion = "cancelled"
 				}
 				w.WriteHeader(202)
+				return
+			}
+			if r.Method == "GET" && a.missDispatchedRun() {
+				http.NotFound(w, r)
 				return
 			}
 			write(a.Runs[i])
@@ -201,6 +211,14 @@ func (a *testAPI) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, fmt.Sprintf("unhandled %s %s", r.Method, path), 404)
 	}
+}
+
+func (a *testAPI) missDispatchedRun() bool {
+	if a.DispatchReadMisses == 0 {
+		return false
+	}
+	a.DispatchReadMisses--
+	return true
 }
 func (a *testAPI) count(method, path string) int {
 	a.mu.Lock()
