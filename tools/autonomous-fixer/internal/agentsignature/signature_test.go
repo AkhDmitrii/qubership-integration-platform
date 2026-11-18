@@ -68,6 +68,28 @@ func TestJevMissingModelDoesNotHidePartialUsage(t *testing.T) {
 	}
 }
 
+func TestHostedDocumentationIncludesJevOnce(t *testing.T) {
+	dir := t.TempDir()
+	put(t, dir, "config.json", runConfig{Hosted: true, TaskKind: "documentation", Profile: experimentruntime.Profile{Runtime: "opencode", Model: "openrouter/openai/author", Effort: "high"}})
+	put(t, dir, "step-0001-docs-write/"+IdentityFilename, Identity{Model: "openrouter/openai/author", Effort: "high"})
+	g := openrouterusage.Generation{
+		IDSHA256: "first", RequestedModel: "openai/author", ServedModel: "openai/observed",
+		InputTokens: pointer(int64(1500)), CachedTokens: pointer(int64(1000)),
+		OutputTokens: pointer(int64(85)), CostUSD: pointer(.004),
+	}
+	put(t, dir, openrouterusage.Filename, openrouterusage.Report{Attempts: 2, DuplicateResponses: 1, Generations: []openrouterusage.Generation{g}})
+	packet := doctriage.Packet{ID: "test", Scope: "test", Repository: "org/repo", Issue: json.RawMessage(`{"title":"Fixture"}`)}
+	report, err := doctriage.Evaluate(context.Background(), packet, jev.DefaultModel, archivedJev{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(t, dir, "evidence/documentation-routing.json", map[string]any{"packet": packet, "report": report})
+	s, err := ReadRun(dir)
+	if err != nil || s.Line() != "<sub>🤖 openai/observed high out=300 usd=0.0042</sub>" {
+		t.Fatal(s.Line(), err)
+	}
+}
+
 type archivedJev struct{}
 
 func (archivedJev) Classify(_ context.Context, request jev.Request) (jev.Response, error) {

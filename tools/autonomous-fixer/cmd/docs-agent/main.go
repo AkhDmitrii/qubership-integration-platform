@@ -72,6 +72,14 @@ func run(ctx context.Context, args []string) error {
 	prepared := f.String("prepared", "", "trusted prepared artifact directory")
 	workspace := f.String("workspace", "", "new dedicated worktree")
 	runtimeConfig := f.String("runtime-config", "", "native runtime config JSON")
+	hosted := f.Bool("hosted", false, "run OpenCode with OpenRouter through the controller")
+	runtime := f.String("runtime", "", "absolute path to the hosted OpenCode binary")
+	runtimeVersion := f.String("runtime-version", "", "expected OpenCode version")
+	model := f.String("model", "", "OpenRouter author model")
+	effort := f.String("effort", "", "OpenCode author model variant")
+	reviewModel := f.String("review-model", "", "OpenRouter reviewer model")
+	reviewEffort := f.String("review-effort", "", "OpenCode reviewer model variant")
+	handoff := f.String("handoff", "", "new directory for a validated publication artifact")
 	keyFile := f.String("key-file", "", "private OpenRouter key file")
 	runDir := f.String("run", "", "completed work output directory")
 	actor := f.String("actor", "", "trusted workflow initiating actor")
@@ -166,6 +174,25 @@ func run(ctx context.Context, args []string) error {
 		if !filepath.IsAbs(*prepared) || !filepath.IsAbs(*source) || !filepath.IsAbs(*workspace) || !filepath.IsAbs(*output) {
 			return fmt.Errorf("work requires absolute prepared/source/workspace/output paths")
 		}
+		var cfg localwork.Config
+		if *hosted {
+			if *runtimeConfig != "" || *keyFile != "" {
+				return fmt.Errorf("hosted work takes runtime flags and OPENROUTER_API_KEY from the environment")
+			}
+			cfg = localwork.Config{
+				Hosted: true, RuntimeBinary: *runtime, RuntimeVersion: *runtimeVersion,
+				Profile:       experimentruntime.Profile{Runtime: "opencode", Model: *model, Effort: *effort},
+				ReviewProfile: &experimentruntime.Profile{Runtime: "opencode", Model: *reviewModel, Effort: *reviewEffort},
+			}
+			if e := validateHostedRuntime(ctx, cfg); e != nil {
+				return e
+			}
+		} else if *runtime != "" || *runtimeVersion != "" || *model != "" || *effort != "" || *reviewModel != "" || *reviewEffort != "" || *handoff != "" {
+			return fmt.Errorf("runtime and handoff flags require hosted work")
+		}
+		if *handoff != "" && !filepath.IsAbs(*handoff) {
+			return fmt.Errorf("handoff path must be absolute")
+		}
 		var plan docgithub.Plan
 		var packet doctriage.Packet
 		if e := read(filepath.Join(*prepared, "plan.json"), &plan); e != nil {
@@ -201,12 +228,11 @@ func run(ctx context.Context, args []string) error {
 		if e != nil {
 			return e
 		}
-		var cfg localwork.Config
 		if *runtimeConfig != "" {
 			if e = read(*runtimeConfig, &cfg); e != nil {
 				return e
 			}
-		} else {
+		} else if !*hosted {
 			if routing.Route != "docs-no-change" {
 				return fmt.Errorf("route %s requires runtime-config; classifier artifacts are preserved (%v)", routing.Route, callErr)
 			}
@@ -252,6 +278,11 @@ func run(ctx context.Context, args []string) error {
 			}
 			if e = docfeedback.WriteNew(filepath.Join(*output, "feedback.json"), record); e != nil {
 				return e
+			}
+			if *handoff != "" {
+				if e = exportHandoff(ctx, plan, *output, *workspace, *handoff); e != nil {
+					return e
+				}
 			}
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"status": result.Status, "route": routing.Route, "plan_id": plan.ID, "work_directory": cfg.OutputDirectory})

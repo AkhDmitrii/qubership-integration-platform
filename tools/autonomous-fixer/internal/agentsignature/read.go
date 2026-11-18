@@ -20,6 +20,7 @@ type runConfig struct {
 	Hosted     bool                      `json:"hosted"`
 	Profile    experimentruntime.Profile `json:"profile"`
 	TaskID     string                    `json:"task_id"`
+	TaskKind   string                    `json:"task_kind"`
 	ResumeFrom string                    `json:"resume_from"`
 }
 
@@ -74,13 +75,50 @@ func readHosted(dir string, config runConfig) (Signature, error) {
 		}
 	}
 	var report openrouterusage.Report
-	if err := readFile(dir, openrouterusage.Filename, &report); err != nil {
-		if os.IsNotExist(err) {
-			return Signature{Model: author.Model, Effort: author.Effort}, nil
-		}
+	s := Signature{Model: author.Model, Effort: author.Effort}
+	if err := readFile(dir, openrouterusage.Filename, &report); err == nil {
+		s = signatureFromOpenRouter(report, config.Profile.Model, author.Model, author.Effort)
+	} else if !os.IsNotExist(err) {
 		return Signature{}, err
 	}
-	return signatureFromOpenRouter(report, config.Profile.Model, author.Model, author.Effort), nil
+	if config.TaskKind == "documentation" {
+		response, attempted, err := readDocumentationJev(dir)
+		if err != nil {
+			return Signature{}, err
+		}
+		if attempted && response != nil && len(stages) == 0 {
+			return FromJev(*response), nil
+		}
+		if attempted && s.Model != "" {
+			s.Input, s.Cached = nil, nil
+			if response == nil {
+				s.Output, s.USD = nil, nil
+			} else {
+				decision := FromJev(*response)
+				s.Output = add(s.Output, decision.Output)
+				s.USD = addUSD(s.USD, decision.USD)
+			}
+		}
+	}
+	return s, nil
+}
+
+func readDocumentationJev(dir string) (*jev.Response, bool, error) {
+	var route struct {
+		Packet doctriage.Packet
+		Report doctriage.Report
+	}
+	if err := readFile(dir, "evidence/documentation-routing.json", &route); err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	attempted := route.Report.RequestAttempted || route.Report.Response != nil || route.Report.Mode == "shadow" && route.Report.Error != ""
+	if !attempted || route.Report.Response == nil || doctriage.ValidateReport(route.Packet, route.Report) != nil {
+		return nil, attempted, nil
+	}
+	return route.Report.Response, true, nil
 }
 
 func readLocal(runs []runSource, complete bool) (Signature, error) {
@@ -132,20 +170,16 @@ func readLocal(runs []runSource, complete bool) (Signature, error) {
 			s.Cached = add(s.Cached, usage.Tokens.CachedInput)
 			s.Output = add(s.Output, usage.Tokens.Output)
 		}
-		var route struct {
-			Packet doctriage.Packet
-			Report doctriage.Report
-		}
-		err = readFile(run.dir, "evidence/documentation-routing.json", &route)
-		if err != nil && !os.IsNotExist(err) {
+		response, attempted, err := readDocumentationJev(run.dir)
+		if err != nil {
 			return Signature{}, err
 		}
-		if err == nil && (route.Report.RequestAttempted || route.Report.Response != nil || route.Report.Mode == "shadow" && route.Report.Error != "") {
+		if attempted {
 			jevAttempted = true
-			if route.Report.Response == nil || doctriage.ValidateReport(route.Packet, route.Report) != nil {
+			if response == nil {
 				missingJev = true
 			} else {
-				responses = append(responses, *route.Report.Response)
+				responses = append(responses, *response)
 			}
 		}
 	}
