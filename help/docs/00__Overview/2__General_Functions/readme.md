@@ -214,7 +214,7 @@ The system saves the state of some UI elements while the user works with them. S
 - **Table columns** - sorting results, visibility and sequence.
 - **Left panel** for sections "Services", "Admin Tools", "Dev Tools" - expanded or collapsed view.
 
-To reset saved configuration, click user icon ![user](img/user.svg) on top right of the screen and then click ![redo](img/redo.svg) "Reset UI preferences" button.
+To reset saved configuration, click user icon ![user](img/user.svg) on top right of the screen and then click ![redo](img/redo.svg) **Reset interface preferences** button.
 
 ## Theme Settings
 <ins>Web UI</ins>
