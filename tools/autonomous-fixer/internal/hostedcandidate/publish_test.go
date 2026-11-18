@@ -58,6 +58,7 @@ func repo(t *testing.T) (Options, Candidate, string) {
 }
 
 type githubFixture struct {
+	refSHA, commitParent             string
 	targetSHA, comparisonStatus      string
 	o                                Options
 	tree, tip, branch, body, message string
@@ -100,11 +101,11 @@ func (g *githubFixture) Request(ctx context.Context, method, path string, body, 
 		if g.branch == "" {
 			return &fixer.HTTPError{Status: 404}
 		}
-		return assign(target, ref{object{g.tip}})
-	case path == "/git/commits/"+g.o.Base:
+		return assign(target, ref{object{g.refSHA}})
+	case path == "/git/commits/"+g.o.Base || (g.targetSHA != "" && path == "/git/commits/"+g.targetSHA):
 		return assign(target, commit{Tree: object{g.o.Base}})
 	case path == "/git/commits/"+g.tip:
-		return assign(target, commit{Tree: object{g.tree}, Parents: []object{{g.o.Base}}, Message: g.message})
+		return assign(target, commit{Tree: object{g.tree}, Parents: []object{{g.commitParent}}, Message: g.message})
 	case path == "/git/blobs":
 		raw, _ := base64.StdEncoding.DecodeString(body.(map[string]string)["content"])
 		h := sha1.New()
@@ -115,9 +116,20 @@ func (g *githubFixture) Request(ctx context.Context, method, path string, body, 
 		return assign(target, object{g.tree})
 	case path == "/git/commits":
 		g.message = body.(map[string]any)["message"].(string)
+		g.commitParent = body.(map[string]any)["parents"].([]string)[0]
 		g.tip = strings.Repeat("b", 40)
 		return assign(target, object{g.tip})
+	case method == "PATCH" && path == "/git/refs/heads/"+g.branch:
+		if body.(map[string]any)["force"] != false || g.commitParent != g.refSHA {
+			return fmt.Errorf("not a fast-forward")
+		}
+		g.refSHA = body.(map[string]any)["sha"].(string)
+		return nil
 	case path == "/git/refs":
+		g.refSHA = body.(map[string]string)["sha"]
+		if g.refSHA == g.tip {
+			return fmt.Errorf("cannot create branch at unreferenced commit")
+		}
 		g.branch = strings.TrimPrefix(body.(map[string]string)["ref"], "refs/heads/")
 		return nil
 	case path == "/pulls":
@@ -203,5 +215,51 @@ func TestDefaultBranchAdvanceKeepsPinnedParent(t *testing.T) {
 		if (err == nil) != (status == "ahead") || (status != "ahead" && g.writes != 0) {
 			t.Fatal(status, err, g.writes)
 		}
+	}
+}
+
+func TestControllerOnlyAdvancePublishesTheSameProductEdits(t *testing.T) {
+	o, c, _ := repo(t)
+	ctx := context.Background()
+	run := func(args ...string) string {
+		v, err := git(ctx, o.Workspace, "", nil, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(v))
+	}
+	run("restore", "--source", o.Base, "--staged", "--worktree", ".")
+	dir := filepath.Join(o.Workspace, ".github", "workflows")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent-control.yaml"), []byte("controller update"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".github")
+	run("-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-qm", "controller update")
+	head := run("rev-parse", "HEAD")
+	projected := c
+	projected.BaseSHA = head
+	tree, err := candidateTree(ctx, o.Workspace, projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &githubFixture{o: o, tree: tree, targetSHA: head, comparisonStatus: "ahead"}
+	for i := 0; i < 2; i++ {
+		if _, err := Publish(ctx, g, c, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if g.commitParent != head || g.created != 1 || !strings.Contains(g.body, o.Base) {
+		t.Fatal(g.commitParent, g.body, g.created)
+	}
+	if err := os.WriteFile(filepath.Join(o.Workspace, "ui", "file"), []byte("independent product change"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "ui/file")
+	run("-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-qm", "unrelated change")
+	if controllerOnlyAdvance(ctx, o.Workspace, o.Base, run("rev-parse", "HEAD")) {
+		t.Fatal("changed product base accepted")
 	}
 }

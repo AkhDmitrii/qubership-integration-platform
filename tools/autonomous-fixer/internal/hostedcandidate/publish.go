@@ -111,10 +111,51 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 	var head ref
 	marker := fmt.Sprintf("<!-- qip-fix:%d:%d:%d -->", o.Issue, o.Run, o.Attempt)
 	message := fmt.Sprintf("fix: resolve issue #%d\n\n%s", o.Issue, marker)
+	// A fine-grained publication token may create a branch at main but not at
+	// an older workflow revision. Keep every product file on its tested base.
+	parent := o.Base
+	if controllerOnlyAdvance(ctx, o.Workspace, o.Base, target.Object.SHA) {
+		parent = target.Object.SHA
+	}
 	err = api.Request(ctx, "GET", reference, nil, &head)
 	if missing(err) {
+		createErr := api.Request(ctx, "POST", "/git/refs", map[string]string{"ref": "refs/heads/" + branch, "sha": parent}, nil)
+		if err = api.Request(ctx, "GET", reference, nil, &head); err != nil {
+			return out, fmt.Errorf("create publication branch at %s: %w", parent, errors.Join(createErr, err))
+		}
+	} else if err != nil {
+		return out, err
+	}
+	if !sha.MatchString(head.Object.SHA) {
+		return out, fmt.Errorf("invalid publication branch")
+	}
+	seeded := head.Object.SHA == parent || head.Object.SHA == o.Base
+	if seeded {
+		parent = head.Object.SHA
+	} else {
+		var existing commit
+		if err = api.Request(ctx, "GET", "/git/commits/"+head.Object.SHA, nil, &existing); err != nil {
+			return out, err
+		}
+		if existing.Message != message || len(existing.Parents) != 1 {
+			return out, fmt.Errorf("publication branch already contains unrelated work")
+		}
+		parent = existing.Parents[0].SHA
+		if parent != o.Base && !controllerOnlyAdvance(ctx, o.Workspace, o.Base, parent) {
+			return out, fmt.Errorf("existing branch has an unexpected base")
+		}
+	}
+	if parent != o.Base {
+		projected := c
+		projected.BaseSHA = parent
+		tree, err = candidateTree(ctx, o.Workspace, projected)
+		if err != nil {
+			return out, err
+		}
+	}
+	if seeded {
 		var base commit
-		if err = api.Request(ctx, "GET", "/git/commits/"+o.Base, nil, &base); err != nil {
+		if err = api.Request(ctx, "GET", "/git/commits/"+parent, nil, &base); err != nil {
 			return out, err
 		}
 		if !sha.MatchString(base.Tree.SHA) {
@@ -149,7 +190,7 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 			return out, fmt.Errorf("GitHub tree differs from the validated candidate")
 		}
 		var tip object
-		if err = api.Request(ctx, "POST", "/git/commits", map[string]any{"message": message, "parents": []string{o.Base}, "tree": tree}, &tip); err != nil {
+		if err = api.Request(ctx, "POST", "/git/commits", map[string]any{"message": message, "parents": []string{parent}, "tree": tree}, &tip); err != nil {
 			return out, err
 		}
 		if !sha.MatchString(tip.SHA) {
@@ -159,21 +200,22 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 		if err != nil {
 			return out, err
 		}
-		createErr := api.Request(ctx, "POST", "/git/refs", map[string]string{"ref": "refs/heads/" + branch, "sha": tip.SHA}, nil)
+		updateErr := api.Request(ctx, "PATCH", "/git/refs/heads/"+branch, map[string]any{"sha": tip.SHA, "force": false}, nil)
 		if err = api.Request(ctx, "GET", reference, nil, &head); err != nil {
-			return out, errors.Join(createErr, err)
+			return out, errors.Join(updateErr, err)
 		}
-	} else if err != nil {
-		return out, err
+		if head.Object.SHA == parent {
+			return out, errors.Join(updateErr, fmt.Errorf("publication branch did not advance"))
+		}
 	}
-	var stored commit
 	if !sha.MatchString(head.Object.SHA) {
 		return out, fmt.Errorf("invalid publication branch")
 	}
+	var stored commit
 	if err = api.Request(ctx, "GET", "/git/commits/"+head.Object.SHA, nil, &stored); err != nil {
 		return out, err
 	}
-	if stored.Tree.SHA != tree || len(stored.Parents) != 1 || stored.Parents[0].SHA != o.Base || stored.Message != message {
+	if stored.Tree.SHA != tree || len(stored.Parents) != 1 || stored.Parents[0].SHA != parent || stored.Message != message {
 		return out, fmt.Errorf("existing branch differs from this candidate")
 	}
 	owner := strings.SplitN(o.Repository, "/", 2)[0]
@@ -191,6 +233,9 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 			title = string([]rune(title)[:90])
 		}
 		body := fmt.Sprintf("Closes #%d\n\n[Agent report and evidence](https://github.com/%s/actions/runs/%d/attempts/%d)\n\n%s", o.Issue, o.Repository, o.Run, o.Attempt, marker)
+		if parent != o.Base {
+			body += fmt.Sprintf("\n\nProduct validated at `%s`. Publication includes controller updates through `%s`.", o.Base, parent)
+		}
 		createErr := api.Request(ctx, "POST", "/pulls", map[string]any{"title": "fix: " + title, "head": branch, "base": o.DefaultBranch, "draft": true, "body": body}, nil)
 		prs, err = api.List(ctx, query, "")
 		if err != nil || len(prs) == 0 {
@@ -219,4 +264,27 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 		return out, fmt.Errorf("pull request differs from the recorded draft")
 	}
 	return Published{Number: pr.Number, SHA: head.Object.SHA, Branch: branch, URL: pr.URL}, nil
+}
+
+func controllerOnlyAdvance(ctx context.Context, workspace, base, next string) bool {
+	if base == next || !sha.MatchString(next) {
+		return false
+	}
+	if _, err := git(ctx, workspace, "", nil, "merge-base", "--is-ancestor", base, next); err != nil {
+		return false
+	}
+	diff, err := git(ctx, workspace, "", nil, "diff-tree", "--no-renames", "--name-only", "-r", "-z", base, next)
+	if err != nil || len(diff) == 0 {
+		return false
+	}
+	for _, path := range strings.Split(strings.TrimSuffix(string(diff), "\x00"), "\x00") {
+		switch path {
+		case ".github/workflows/agent-control.yaml", ".github/workflows/agent-work.yaml", ".github/workflows/agent-publish.yaml":
+		default:
+			if !strings.HasPrefix(path, "tools/autonomous-fixer/") {
+				return false
+			}
+		}
+	}
+	return true
 }
