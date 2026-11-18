@@ -1,0 +1,265 @@
+name: QIP agent work
+run-name: >-
+  qip-agent-work|${{ inputs.issue }}|${{ inputs.execution }}|${{ inputs.generation }}|${{ inputs.contract_version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number
+        required: true
+        type: string
+      execution:
+        description: Execution ID
+        required: true
+        type: string
+      generation:
+        description: Execution generation
+        required: true
+        type: string
+      contract_version:
+        description: Contract version
+        required: true
+        type: string
+      trusted_sha:
+        description: Trusted commit SHA
+        required: true
+        type: string
+      mode:
+        description: Worker mode recorded by the controller
+        required: false
+        type: choice
+        default: fake
+        options: [fake, pilot]
+
+permissions: {}
+
+jobs:
+  admit:
+    if: >-
+      ${{ vars.AGENT_ENABLED == 'true' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    outputs:
+      admitted: ${{ steps.admit.outputs.admitted }}
+    concurrency:
+      group: qip-agent-control
+      queue: max
+      cancel-in-progress: false
+    env:
+      AGENT_ENABLED: ${{ vars.AGENT_ENABLED }}
+      AGENT_SCOPE_PATHS: ${{ vars.AGENT_SCOPE_PATHS }}
+      AGENT_MODE: ${{ vars.AGENT_MODE || 'fake' }}
+      INPUT_ISSUE: ${{ inputs.issue }}
+      INPUT_EXECUTION: ${{ inputs.execution }}
+      INPUT_GENERATION: ${{ inputs.generation }}
+      INPUT_CONTRACT_VERSION: ${{ inputs.contract_version }}
+      INPUT_TRUSTED_SHA: ${{ inputs.trusted_sha }}
+      INPUT_MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: tools/autonomous-fixer/go.mod
+          cache: false
+      - name: Build agent
+        working-directory: tools/autonomous-fixer
+        env:
+          GOTOOLCHAIN: local
+        run: go build -trimpath -o "$RUNNER_TEMP/qip-agent" ./cmd/agent
+      - id: admit
+        run: '"$RUNNER_TEMP/qip-agent" admit'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_VARIABLES_READ_TOKEN: ${{ secrets.AGENT_VARIABLES_READ_TOKEN }}
+
+  work:
+    needs: admit
+    if: >-
+      ${{ vars.AGENT_ENABLED == 'true' && needs.admit.outputs.admitted == 'true' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.mode == 'pilot' && 360 || 15 }}
+    permissions:
+      contents: read
+      actions: read
+      issues: read
+      packages: read
+    concurrency:
+      group: qip-agent-work
+      queue: max
+      cancel-in-progress: false
+    env:
+      AGENT_ENABLED: ${{ vars.AGENT_ENABLED }}
+      AGENT_SCOPE_PATHS: ${{ vars.AGENT_SCOPE_PATHS }}
+      AGENT_MODE: ${{ vars.AGENT_MODE || 'fake' }}
+      INPUT_ISSUE: ${{ inputs.issue }}
+      INPUT_EXECUTION: ${{ inputs.execution }}
+      INPUT_GENERATION: ${{ inputs.generation }}
+      INPUT_CONTRACT_VERSION: ${{ inputs.contract_version }}
+      INPUT_TRUSTED_SHA: ${{ inputs.trusted_sha }}
+      INPUT_MODE: ${{ inputs.mode }}
+    steps:
+      - name: Set the work directory
+        run: printf 'PILOT_DIR=%s/qip-pilot\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: trusted/tools/autonomous-fixer/go.mod
+          cache: false
+      - name: Build agent
+        working-directory: trusted/tools/autonomous-fixer
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          go build -trimpath -o "$RUNNER_TEMP/qip-agent" ./cmd/agent
+          if [[ "$INPUT_MODE" == pilot ]]; then
+            go build -trimpath -o "$RUNNER_TEMP/qip-work" ./cmd/work
+            go build -trimpath -o "$RUNNER_TEMP/work-metrics" ./cmd/work-metrics
+            go build -trimpath -o "$RUNNER_TEMP/agent-candidate" ./cmd/agent-candidate
+          fi
+      - id: work
+        run: '"$RUNNER_TEMP/qip-agent" work'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_VARIABLES_READ_TOKEN: ${{ secrets.AGENT_VARIABLES_READ_TOKEN }}
+          AGENT_CHECKPOINT_PATH: ${{ runner.temp }}/qip-pilot/checkpoint.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: inputs.mode == 'fake'
+        with:
+          name: agent-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qip-pilot/checkpoint.json
+          if-no-files-found: error
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        if: inputs.mode == 'pilot'
+        with:
+          ref: ${{ steps.work.outputs.base_sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Freeze the issue and attachments
+        if: inputs.mode == 'pilot'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$INPUT_ISSUE" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/issues/$INPUT_ISSUE" > "$PILOT_DIR/issue.json"
+          python3 "$GITHUB_WORKSPACE/trusted/tools/autonomous-fixer/scripts/hosted_issue.py" \
+            "$PILOT_DIR/checkpoint.json" "$PILOT_DIR/issue.json" "$PILOT_DIR/assignment"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        if: inputs.mode == 'pilot'
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Restore the Maven repository
+        if: inputs.mode == 'pilot'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ runner.os }}-snapshot-flow-${{ hashFiles('candidate/**/pom.xml') }}
+          restore-keys: |
+            maven-${{ runner.os }}-snapshot-flow-
+            maven-${{ runner.os }}-runtime-catalog-
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        if: inputs.mode == 'pilot'
+        with:
+          node-version: '22.x'
+          package-manager-cache: false
+      - name: Install OpenCode
+        if: inputs.mode == 'pilot'
+        shell: bash
+        run: |
+          opencode_archive="$RUNNER_TEMP/opencode-linux-x64.tar.gz"
+          curl --fail --location --silent --show-error --output "$opencode_archive" \
+            https://github.com/anomalyco/opencode/releases/download/v2.2.6/opencode-linux-x64.tar.gz
+          printf '%s  %s\n' 08bb21d6326ce740d91cce7ebe88a6536933f6e1e30353b91a06b01f25da306c "$opencode_archive" | sha256sum --check
+          tar -xzf "$opencode_archive" -C "$RUNNER_TEMP" opencode
+          "$RUNNER_TEMP/opencode" --version
+      - name: Prepare the product environment
+        if: inputs.mode == 'pilot'
+        env:
+          MAVEN_GITHUB_USERNAME: ${{ vars.QIP_PILOT_MAVEN_USERNAME || github.actor }}
+          MAVEN_GITHUB_PASSWORD: ${{ secrets.QIP_PILOT_MAVEN_TOKEN || github.token }}
+        run: |
+          bash "$GITHUB_WORKSPACE/trusted/tools/autonomous-fixer/scripts/hosted_prepare.sh" \
+            "$GITHUB_WORKSPACE/trusted" "$GITHUB_WORKSPACE/candidate" "$PILOT_DIR"
+      - name: Run the author and reviewer
+        id: author
+        if: inputs.mode == 'pilot'
+        continue-on-error: true
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          QIP_PILOT_MODEL: ${{ vars.QIP_PILOT_MODEL || 'openrouter/openai/gpt-6-luna' }}
+          QIP_PILOT_EFFORT: ${{ vars.QIP_PILOT_EFFORT || 'high' }}
+          QIP_PILOT_REVIEW_MODEL: ${{ vars.QIP_PILOT_REVIEW_MODEL || 'openrouter/openai/gpt-6.1-terra' }}
+          QIP_PILOT_REVIEW_EFFORT: ${{ vars.QIP_PILOT_REVIEW_EFFORT || 'medium' }}
+          QIP_PILOT_REVIEW_SCOPE: ${{ vars.QIP_PILOT_REVIEW_SCOPE }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/trusted/tools/autonomous-fixer/scripts/hosted_launch.py" \
+            "$GITHUB_WORKSPACE/candidate" "$PILOT_DIR/assignment" "$PILOT_DIR" \
+            "$RUNNER_TEMP/qip-work" "$RUNNER_TEMP/opencode"
+      - name: Stage pilot evidence
+        if: always() && inputs.mode == 'pilot'
+        run: |
+          if [[ -d "$PILOT_DIR" ]]; then
+            python3 "$GITHUB_WORKSPACE/trusted/tools/autonomous-fixer/scripts/hosted_evidence.py" \
+              "$PILOT_DIR" "$RUNNER_TEMP/qip-pilot-evidence"
+          fi
+      - name: Summarize staged measurements
+        if: always() && inputs.mode == 'pilot'
+        continue-on-error: true
+        run: |
+          staged="$RUNNER_TEMP/qip-pilot-evidence"
+          if [[ -f "$staged/result/config.json" ]]; then
+            "$RUNNER_TEMP/work-metrics" --output "$RUNNER_TEMP/qip-pilot-metrics.json" "$staged/result"
+          fi
+      - name: Package the author result
+        if: inputs.mode == 'pilot'
+        env:
+          BASE_SHA: ${{ steps.work.outputs.base_sha }}
+          AUTHOR_OUTCOME: ${{ steps.author.outcome }}
+          AGENT_CHECKPOINT_PATH: ${{ runner.temp }}/qip-pilot/checkpoint.json
+          AGENT_PILOT_ARTIFACT_DIR: ${{ runner.temp }}/qip-pilot/artifact
+        run: |
+          mkdir -m 700 "$AGENT_PILOT_ARTIFACT_DIR"
+          cp "$RUNNER_TEMP/qip-pilot-evidence/result/report.json" "$AGENT_PILOT_ARTIFACT_DIR/report.json"
+          outcome=$(jq -er '.status' "$AGENT_PILOT_ARTIFACT_DIR/report.json")
+          if [[ "$outcome" == author-reported-fixed ]]; then
+            [[ "$AUTHOR_OUTCOME" == success ]]
+            "$RUNNER_TEMP/agent-candidate" pack --workspace "$GITHUB_WORKSPACE/candidate" \
+              --base "$BASE_SHA" --output "$AGENT_PILOT_ARTIFACT_DIR/candidate.json"
+          fi
+          "$RUNNER_TEMP/qip-agent" seal
+      - name: Save the author result
+        if: inputs.mode == 'pilot'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: agent-pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qip-pilot/artifact/
+          if-no-files-found: error
+      - name: Save pilot evidence
+        if: always() && inputs.mode == 'pilot'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: agent-pilot-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qip-pilot-evidence/
+          if-no-files-found: ignore
+      - name: Save pilot metrics
+        if: always() && inputs.mode == 'pilot'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: agent-pilot-metrics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qip-pilot-metrics.json
+          if-no-files-found: ignore

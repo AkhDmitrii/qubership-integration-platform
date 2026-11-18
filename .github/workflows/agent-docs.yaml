@@ -1,0 +1,154 @@
+name: QIP documentation agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Issue number
+        required: true
+        type: string
+      operation:
+        description: Prepare input without models or reconcile a merged documentation PR
+        required: true
+        type: choice
+        default: prepare
+        options: [prepare, reconcile]
+      apply:
+        description: Apply GitHub changes after validation
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  prepare:
+    if: >-
+      ${{ inputs.operation == 'prepare' && vars.AGENT_DOCS_ENABLED == 'true' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.artifact-name.outputs.name }}
+    steps:
+      - name: Name preparation artifact
+        id: artifact-name
+        run: echo "name=docs-prepared-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: tools/autonomous-fixer/go.mod
+          cache: false
+      - name: Build documentation agent
+        working-directory: tools/autonomous-fixer
+        env:
+          GOTOOLCHAIN: local
+        run: go build -trimpath -o "$RUNNER_TEMP/docs-agent" ./cmd/docs-agent
+      - name: Create read-only GitHub App token
+        id: app-token
+        if: vars.AGENT_DOCS_APP_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        env:
+          # This pinned version reads permission inputs from environment variables.
+          INPUT_PERMISSION-VARIABLES: read
+        with:
+          app-id: ${{ vars.AGENT_DOCS_APP_ID }}
+          private-key: ${{ secrets.AGENT_DOCS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-issues: read
+          permission-pull-requests: read
+          permission-organization-projects: read
+      - name: Prepare trusted input
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.AGENT_DOCS_READ_TOKEN || secrets.AGENT_DOCS_GITHUB_TOKEN }}
+          ISSUE: ${{ inputs.issue }}
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -o pipefail
+          [[ "$ISSUE" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid issue number'; exit 1; }
+          test -n "$GITHUB_TOKEN" || { echo 'A GitHub read token is required'; exit 1; }
+          "$RUNNER_TEMP/docs-agent" prepare --repository "$REPOSITORY" --issue "$ISSUE" --project 12 \
+            --source "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/prepared" --actor "$ACTOR" \
+            --request-id "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" 2>&1 | tee "$RUNNER_TEMP/prepare.log"
+      - name: Save preparation evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ${{ steps.artifact-name.outputs.name }}
+          path: |
+            ${{ runner.temp }}/prepared/
+            ${{ runner.temp }}/prepare.log
+          if-no-files-found: warn
+
+  reconcile:
+    if: >-
+      ${{ inputs.operation == 'reconcile' && vars.AGENT_DOCS_ENABLED == 'true' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    concurrency:
+      group: qip-docs-publish-${{ inputs.issue }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: tools/autonomous-fixer/go.mod
+          cache: false
+      - name: Build documentation agent
+        working-directory: tools/autonomous-fixer
+        env:
+          GOTOOLCHAIN: local
+        run: go build -trimpath -o "$RUNNER_TEMP/docs-agent" ./cmd/docs-agent
+      - name: Create GitHub App publication token
+        id: app-token
+        if: vars.AGENT_DOCS_APP_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        env:
+          # This pinned version reads permission inputs from environment variables.
+          INPUT_PERMISSION-VARIABLES: read
+        with:
+          app-id: ${{ vars.AGENT_DOCS_APP_ID }}
+          private-key: ${{ secrets.AGENT_DOCS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+          permission-organization-projects: write
+      - name: Reconcile publication
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.AGENT_DOCS_GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ISSUE: ${{ inputs.issue }}
+          ACTOR: ${{ github.actor }}
+          APPLY: ${{ inputs.apply }}
+        run: |
+          set -o pipefail
+          [[ "$ISSUE" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid issue number'; exit 1; }
+          test -n "$GITHUB_TOKEN" || { echo 'A GitHub publication token is required'; exit 1; }
+          args=()
+          if [[ "$APPLY" == true ]]; then args+=(--apply); fi
+          "$RUNNER_TEMP/docs-agent" reconcile --repository "$REPOSITORY" --issue "$ISSUE" \
+            --actor "$ACTOR" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/reconcile.log"
+      - name: Save reconciliation evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: docs-reconcile-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/reconcile.log
+          if-no-files-found: warn

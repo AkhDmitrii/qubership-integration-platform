@@ -32,9 +32,7 @@ import { CONTAINER } from "../env/compose-containers.ts";
 import { serviceUrl } from "../env/containers.ts";
 import type { ServiceRole } from "../env/index.ts";
 import type { ProvisionReport } from "../env/provision.ts";
-import { publishedLabel } from "./run-report.mjs";
-
-export { publishedLabel };
+import { publishedImagesLine } from "./run-report.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RESULTS = path.join(HERE, "..", "test-results");
@@ -286,6 +284,7 @@ function headerSection(header: StackHeader | null, report: JsonReport): string[]
         : header.commit.dirty
           ? ", working tree dirty"
           : "";
+    const published = publishedImagesLine(header.provision.published, true);
     lines.push(
       `- Target: ${header.target}`,
       ...(header.absent.length
@@ -319,14 +318,7 @@ function headerSection(header: StackHeader | null, report: JsonReport): string[]
         (header.provision.started.length
           ? `, started ${header.provision.started.join(", ")}`
           : ""),
-      ...(header.provision.published.length
-        ? [
-            `- From GHCR: ` +
-              header.provision.published
-                .map((each) => `${each.name} \`${publishedLabel(each)}\``)
-                .join(", "),
-          ]
-        : []),
+      ...(published ? [`- ${published}`] : []),
       "",
     );
     // Its own line rather than another comma-separated item, because it is the one entry that says
