@@ -8,7 +8,7 @@ export class ChainsPage {
   constructor(page: Page) {
     this.page = page;
     this.searchField = page.getByRole("textbox", {
-      name: "Search chains and folders...",
+      name: "Search",
     });
   }
 
