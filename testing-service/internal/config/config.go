@@ -109,7 +109,10 @@ func (c Config) RetentionEnabled() bool {
 // ProductionMode reports what GET /mode answers. It reads an unset flag as
 // production, so it holds whether or not WithDefaults has run.
 func (c Config) ProductionMode() bool {
-	return c.Production == nil || *c.Production
+	if c.Production == nil {
+		return DefaultProduction
+	}
+	return *c.Production
 }
 
 // DB hands out the bun handle that the repositories run their queries on. The
