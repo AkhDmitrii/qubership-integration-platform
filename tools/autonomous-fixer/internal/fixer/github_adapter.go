@@ -131,6 +131,8 @@ func (a *GitHubAdapter) Perform(ctx context.Context, effect Effect) error {
 		return err
 	}
 	switch effect.Kind {
+	case "report-pilot":
+		return a.postPilotReport(ctx, effect)
 	case "dispatch":
 		var response struct {
 			RunID int64 `json:"workflow_run_id"`
@@ -200,6 +202,9 @@ func (a *GitHubAdapter) Observe(ctx context.Context, effect Effect) (Observation
 	}
 	if effect.Kind == "publish" {
 		return Observation{Status: "unknown"}, nil
+	}
+	if effect.Kind == "report-pilot" {
+		return a.observePilotReport(ctx, effect)
 	}
 	var run *WorkflowRun
 	_, acknowledged := a.dispatched[execution.ID]

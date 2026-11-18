@@ -16,6 +16,7 @@ import (
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/doccycle"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/docpacket"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/doctriage"
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/jev"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/localwork"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcontext"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcycle"
@@ -30,6 +31,7 @@ type Candidate struct {
 	Report workcycle.Report `json:"report"`
 	Files  []CandidateFile  `json:"files,omitempty"`
 	Digest string           `json:"digest"`
+	jev    *jev.Response
 }
 
 func bytesHash(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
@@ -250,6 +252,7 @@ func ValidateCandidate(ctx context.Context, plan Plan, runDir, sourcePath string
 	if e := doctriage.ValidateReport(packet, proof.Report); e != nil {
 		return c, e
 	}
+	c.jev = proof.Report.Response
 	routing, e := doctriage.SelectRoute(packet, proof.Report, proof.Routing.Policy)
 	if e != nil {
 		return c, e

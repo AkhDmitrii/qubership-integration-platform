@@ -2,7 +2,6 @@ package docgithub
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -40,18 +39,8 @@ func VerifyDocumentationPR(ctx context.Context, c *Client, number int, publisher
 		if !strings.EqualFold(comment.User.Login, publisherLogin) || !strings.HasPrefix(comment.Body, "<!-- qip-docs:") {
 			continue
 		}
-		prefix := "<!-- qip-docs-state:"
-		i := strings.LastIndex(comment.Body, prefix)
-		if i < 0 {
-			continue
-		}
-		encoded := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(comment.Body[i+len(prefix):]), "-->"))
-		data, e := base64.StdEncoding.DecodeString(encoded)
-		if e != nil {
-			continue
-		}
-		var state Publication
-		if json.Unmarshal(data, &state) != nil || state.Plan == nil || validatePublicationPlan(*state.Plan) != nil {
+		state, err := decodePublicationState(comment.Body)
+		if err != nil || state.Plan == nil || validatePublicationPlan(*state.Plan) != nil {
 			continue
 		}
 		p := state.Plan

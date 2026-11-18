@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/docpacket"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/doctriage"
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/experimentruntime"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/jev"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/localwork"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcontext"
@@ -47,7 +49,8 @@ func (f knownClassifier) Classify(_ context.Context, r jev.Request) (jev.Respons
 	if f.needed {
 		choices = map[string]string{"documentation_action": "needed", "documentation_reason": "stale_guidance", "change_attribution": "change_related"}
 	}
-	response := jev.Response{ID: "request-id", Model: r.Model, Answers: map[string]jev.Answer{}}
+	input, output, cost := int64(120), int64(30), 0.0042
+	response := jev.Response{ID: "request-id", Model: r.Model, Answers: map[string]jev.Answer{}, Usage: &jev.Usage{InputTokens: &input, OutputTokens: &output, Cost: &cost}}
 	for name, q := range r.Questions {
 		a := jev.Answer{Type: "choice", Choice: choices[name], Probabilities: map[string]float64{}}
 		for option := range q.Criteria {
@@ -111,6 +114,21 @@ func publicationFixtureRoute(t *testing.T, needed, assessment bool) (Plan, strin
 	proof := filepath.Join(run, "evidence/documentation-routing.json")
 	put(t, proof, map[string]any{"origin": "jev-controller-routing", "task_id": "org/repo#1:documentation", "source_sha": sha, "context_sha256": ctx.SHA256, "packet": packet, "report": classifier, "routing": route})
 	cfg := localwork.Config{Workspace: source, TaskDirectory: task, OutputDirectory: run, TaskKind: "documentation", TaskID: "org/repo#1:documentation", Context: selection, DocumentationTriage: &localwork.DocumentationTriage{PacketPath: "packet.json", ReportPath: "jev-report.json"}}
+	if needed {
+		cfg.Profile = experimentruntime.Profile{Runtime: "codex", Model: "gpt-6.1-terra", Effort: "high"}
+		for _, name := range []string{"step-0001-docs-write", "step-0002-docs-review", "step-0003-docs-verify"} {
+			model := cfg.Profile
+			if strings.HasSuffix(name, "-review") {
+				model.Model = "gpt-6.1-sol"
+			}
+			step := filepath.Join(run, name)
+			put(t, filepath.Join(step, "profile.json"), model)
+			put(t, filepath.Join(step, "process.json"), experimentruntime.Result{FinishedAt: time.Now()})
+			putText(t, filepath.Join(step, "home/.codex/sessions/run.jsonl"), `{"type":"session_meta","payload":{"id":"`+name+`"}}`+"\n"+
+				`{"type":"turn_context","payload":{"model":"`+model.Model+`","effort":"`+model.Effort+`"}}`+"\n"+
+				`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":3},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":3}}}}`+"\n")
+		}
+	}
 	put(t, filepath.Join(run, "config.json"), cfg)
 	put(t, filepath.Join(run, "context.json"), ctx)
 	doc := &workcycle.DocumentationDecision{Decision: "no_change", Reason: "outside_help_scope", Summary: "Help is sufficient.", IssueComment: "The change needs no product help update.", Claims: []workcycle.DocClaim{{ID: "behavior", Behavior: "User behavior", Attribution: "unchanged", SourceEvidence: []string{proof}, DocumentationEvidence: []string{proof}, Action: "Keep help unchanged."}}}
@@ -122,7 +140,7 @@ func publicationFixtureRoute(t *testing.T, needed, assessment bool) (Plan, strin
 		doc.Decision = "needed"
 		doc.Reason = "stale_guidance"
 		doc.PRTitle = "docs: update instruction"
-		doc.PRBody = "Describe the shipped control."
+		doc.PRBody = "Describe the shipped control.\n\n<sub>🤖 draft-model in=999</sub>"
 		doc.Claims[0].Attribution = "change_related"
 		doc.Claims[0].NeedsChange = true
 		report.Request.DocumentationEntry.Decision = nil

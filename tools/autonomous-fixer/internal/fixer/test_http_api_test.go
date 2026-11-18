@@ -13,25 +13,26 @@ import (
 )
 
 type testAPI struct {
-	mu                   sync.Mutex
-	Server               *httptest.Server
-	Repository           string
-	Bot                  GitHubUser
-	Issue                Issue
-	Comments             []Comment
-	Events               []json.RawMessage
-	Runs                 []WorkflowRun
-	Artifacts            []map[string]any
-	Trace                []string
-	FailDispatchResponse bool
-	DispatchWithoutID    bool
-	DispatchReadMisses   int
-	CompletionReadMisses int
-	CancellationPending  bool
-	CurrentSHA           string
-	Labels               map[string]bool
-	Variables            map[string]string
-	DraftPullRequest     map[string]any
+	mu                    sync.Mutex
+	Server                *httptest.Server
+	Repository            string
+	Bot                   GitHubUser
+	Issue                 Issue
+	Comments              []Comment
+	Events                []json.RawMessage
+	Runs                  []WorkflowRun
+	Artifacts             []map[string]any
+	Trace                 []string
+	FailDispatchResponse  bool
+	DispatchWithoutID     bool
+	DispatchReadMisses    int
+	CompletionReadMisses  int
+	PilotReportReadMisses int
+	CancellationPending   bool
+	CurrentSHA            string
+	Labels                map[string]bool
+	Variables             map[string]string
+	DraftPullRequest      map[string]any
 }
 
 func testGitHubServer(t *testing.T) *testAPI {
@@ -86,7 +87,15 @@ func (a *testAPI) serve(w http.ResponseWriter, r *http.Request) {
 		if a.Comments == nil {
 			write([]Comment{})
 		} else {
-			write(a.Comments)
+			visible := make([]Comment, 0, len(a.Comments))
+			for _, comment := range a.Comments {
+				if a.PilotReportReadMisses > 0 && comment.User.ID == a.Bot.ID && strings.Contains(comment.Body, "qip-agent-result:v1") {
+					a.PilotReportReadMisses--
+					continue
+				}
+				visible = append(visible, comment)
+			}
+			write(visible)
 		}
 	case path == "/issues/1/comments" && r.Method == "POST":
 		var input struct {

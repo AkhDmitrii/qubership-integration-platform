@@ -155,8 +155,15 @@ func (s *actionSession) publishAction(ctx context.Context, operation string, out
 		}
 		s.run = &run
 		result := s.cfg.PilotResult
-		if result == nil || s.validateCheckpoint(&result.Checkpoint) != nil || result.CandidateSHA256 != candidate.CandidateSHA256 || result.ReportSHA256 != candidate.ReportSHA256 {
+		if result == nil || s.validateCheckpoint(&result.Checkpoint) != nil || result.CandidateSHA256 != candidate.CandidateSHA256 || result.ReportSHA256 != candidate.ReportSHA256 || !reflect.DeepEqual(result.Signature, candidate.Signature) {
 			return output, fmt.Errorf("the downloaded artifact differs from the registered candidate")
+		}
+		if candidate.Signature != nil {
+			data, err := json.Marshal(candidate.Signature)
+			if err != nil {
+				return output, err
+			}
+			output.Outputs["result_signature"] = string(data)
 		}
 	}
 	output.Outputs["process"] = "true"
@@ -182,6 +189,7 @@ func (s *actionSession) confirmPilotPublication(ctx context.Context, candidate P
 		State  string `json:"state"`
 		Draft  bool   `json:"draft"`
 		URL    string `json:"html_url"`
+		Body   string `json:"body"`
 		Head   struct {
 			Ref  string     `json:"ref"`
 			SHA  string     `json:"sha"`
@@ -197,6 +205,9 @@ func (s *actionSession) confirmPilotPublication(ctx context.Context, candidate P
 	}
 	if pr.Number != publication.Number || pr.State != "open" || !pr.Draft || pr.Head.Ref != publication.Branch || pr.Head.SHA != publication.SHA || pr.Head.Repo.FullName != s.state.Repository || pr.Base.Ref != s.repo.DefaultBranch || pr.Base.Repo.FullName != s.state.Repository {
 		return fmt.Errorf("the draft pull request differs from the publication receipt")
+	}
+	if candidate.Signature != nil && candidate.Signature.Append(pr.Body) != pr.Body {
+		return fmt.Errorf("the draft pull request signature differs from the worker result")
 	}
 	next := cloneState(s.state)
 	next.PilotPublication = &PilotPublication{Number: pr.Number, Branch: pr.Head.Ref, SHA: pr.Head.SHA, URL: pr.URL}

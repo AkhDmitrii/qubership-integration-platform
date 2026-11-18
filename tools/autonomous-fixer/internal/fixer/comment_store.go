@@ -54,7 +54,14 @@ func EncodeStateComment(state *State) (string, error) {
 		if q.Status != "open" {
 			continue
 		}
-		lines = append(lines, "", fmt.Sprintf("Question %s (version %d, contract %d):", escapeComment(q.ID), q.Version, q.ContractVersion), escapeComment(q.Question), "", "Resume condition: "+escapeComment(q.ResumeCondition), "", "Answer with: "+escapeComment(fmt.Sprintf("/agent answer %s %d %d <answer>", q.ID, q.Version, q.ContractVersion)))
+		question := escapeComment(q.Question)
+		for _, effect := range state.Effects {
+			if effect.Kind == "report-pilot" && effect.Payload.DecisionID == q.ID && effect.Result != nil {
+				question = fmt.Sprintf("[Read the worker's request](#issuecomment-%d).", effect.Result.CommentID)
+				break
+			}
+		}
+		lines = append(lines, "", fmt.Sprintf("Question %s (version %d, contract %d):", escapeComment(q.ID), q.Version, q.ContractVersion), question, "", "Resume condition: "+escapeComment(q.ResumeCondition), "", "Answer with: "+escapeComment(fmt.Sprintf("/agent answer %s %d %d <answer>", q.ID, q.Version, q.ContractVersion)))
 		if q.Kind == "no-change" {
 			lines = append(lines, "Replace the answer placeholder with `confirm` to accept no change, or `continue` to request more work.")
 		} else {

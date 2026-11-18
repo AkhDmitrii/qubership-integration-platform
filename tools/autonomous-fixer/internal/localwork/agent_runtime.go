@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentsignature"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/experimentruntime"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/openrouterusage"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcontext"
@@ -396,6 +397,10 @@ func (d *Driver) runAgent(ctx context.Context, stage, dir, home, prompt string, 
 		}
 	}
 	archiveErr = errors.Join(archiveErr, writeJSON(filepath.Join(dir, "session.json"), metadata))
+	if d.Config.Hosted && stage == "author" {
+		observed, _ := agentsignature.ReadIdentity(dir, profile.Runtime)
+		archiveErr = errors.Join(archiveErr, writeJSON(filepath.Join(dir, agentsignature.IdentityFilename), observed))
+	}
 	events, parseErr := experimentruntime.ParseEvents(strings.NewReader(string(stream)), profile.Runtime)
 	archiveErr = errors.Join(archiveErr, writeJSON(filepath.Join(dir, "runtime-events.json"), events))
 	text, finalErr := experimentruntime.FinalText(strings.NewReader(string(stream)), profile.Runtime)

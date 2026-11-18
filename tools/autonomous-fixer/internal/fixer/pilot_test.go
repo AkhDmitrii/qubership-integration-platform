@@ -68,8 +68,13 @@ func sealFixture(t *testing.T, checkpoint Checkpoint, status, summary string) (P
 }
 
 func actionPilotComplete(api *testAPI, cfg ActionConfig, result PilotResult) ActionConfig {
-	api.Runs[0].Status, api.Runs[0].Conclusion = "completed", "success"
-	run := api.Runs[0]
+	var run WorkflowRun
+	for i := range api.Runs {
+		if api.Runs[i].ID == result.Checkpoint.Run.RunID {
+			api.Runs[i].Status, api.Runs[i].Conclusion = "completed", "success"
+			run = api.Runs[i]
+		}
+	}
 	api.Artifacts = []map[string]any{{"id": 800, "name": pilotArtifactName(result.Checkpoint.Run), "workflow_run": map[string]any{"id": run.ID, "head_sha": run.HeadSHA}}}
 	cfg.EventName, cfg.Payload.WorkflowRun, cfg.PilotResult = "workflow_run", run, &result
 	return cfg

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentsignature"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
 )
 
@@ -38,6 +39,7 @@ type Publication struct {
 	PRURL                   string `json:"pr_url,omitempty"`
 	CommentID               int64  `json:"comment_id,omitempty"`
 	IssueComment            string `json:"issue_comment,omitempty"`
+	RunSignature            string `json:"run_signature,omitempty"`
 	Applied                 bool   `json:"applied"`
 }
 type publisher struct {
@@ -94,6 +96,35 @@ func Authorize(ctx context.Context, c *Client, actor string) error {
 }
 
 func marker(p Plan) string { return "<!-- qip-docs:" + p.ID + " -->" }
+
+func stateFooter(state Publication) string {
+	if state.Decision == "no_change" && state.RunSignature != "" {
+		return "\n\n" + state.RunSignature
+	}
+	return ""
+}
+
+func decodePublicationState(body string) (Publication, error) {
+	var state Publication
+	const prefix = "<!-- qip-docs-state:"
+	start := strings.LastIndex(body, prefix)
+	if start < 0 {
+		return state, fmt.Errorf("documentation state comment is missing its state marker")
+	}
+	encoded, tail, ended := strings.Cut(body[start+len(prefix):], "-->")
+	if !ended {
+		return state, fmt.Errorf("documentation state marker is incomplete")
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil || json.Unmarshal(data, &state) != nil {
+		return state, fmt.Errorf("invalid documentation state")
+	}
+	if strings.TrimRight(tail, " \t\r\n") != stateFooter(state) {
+		return state, fmt.Errorf("documentation state footer differs from the recorded signature")
+	}
+	return state, nil
+}
+
 func (p *publisher) readState(ctx context.Context) (bool, error) {
 	var viewer struct {
 		Viewer struct {
@@ -127,18 +158,11 @@ func (p *publisher) readState(ctx context.Context) (bool, error) {
 		if found {
 			return false, fmt.Errorf("duplicate documentation state comments")
 		}
-		start := "<!-- qip-docs-state:"
-		i := strings.LastIndex(comment.Body, start)
-		if i < 0 {
-			return false, fmt.Errorf("documentation state comment is malformed")
-		}
-		encoded := strings.TrimSuffix(strings.TrimSpace(comment.Body[i+len(start):]), "-->")
-		data, e := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+		state, e := decodePublicationState(comment.Body)
 		if e != nil {
-			return false, fmt.Errorf("invalid documentation state")
+			return false, e
 		}
-		var state Publication
-		if json.Unmarshal(data, &state) != nil || state.PlanID != p.plan.ID || state.Plan == nil || state.Plan.Validate() != nil || Digest(*state.Plan) != Digest(p.plan) {
+		if state.PlanID != p.plan.ID || state.Plan == nil || state.Plan.Validate() != nil || Digest(*state.Plan) != Digest(p.plan) {
 			return false, fmt.Errorf("documentation state belongs to another plan")
 		}
 		state.CommentID = comment.ID
@@ -188,11 +212,11 @@ func (p *publisher) saveState(ctx context.Context, state Publication) error {
 	state.Plan = &p.plan
 	state.Applied = true
 	encoded, _ := json.Marshal(state)
-	body := marker(p.plan) + "\n" + state.IssueComment + "\n\nDocumentation status: **" + state.Status + "**."
+	body := marker(p.plan) + "\n" + agentsignature.Strip(state.IssueComment) + "\n\nDocumentation status: **" + state.Status + "**."
 	if state.PRURL != "" {
 		body += " [Draft documentation PR](" + state.PRURL + ")."
 	}
-	body += "\n\n<!-- qip-docs-state:" + base64.StdEncoding.EncodeToString(encoded) + " -->"
+	body += "\n\n<!-- qip-docs-state:" + base64.StdEncoding.EncodeToString(encoded) + " -->" + stateFooter(state)
 	if len(body) > 65536 {
 		return fmt.Errorf("documentation state exceeds GitHub comment size")
 	}
@@ -203,7 +227,7 @@ func (p *publisher) saveState(ctx context.Context, state Publication) error {
 		path = fmt.Sprintf("/issues/comments/%d", p.state.CommentID)
 		action = fmt.Sprintf("update-state-%s-%s-%d", state.Status, state.CommitSHA, state.PRNumber)
 	}
-	if p.state.CommentID > 0 && p.state.Status == state.Status && p.state.Decision == state.Decision && p.state.CandidateDigest == state.CandidateDigest && p.state.Branch == state.Branch && p.state.CommitSHA == state.CommitSHA && p.state.MergedHeadSHA == state.MergedHeadSHA && p.state.UpdatedAfterPublication == state.UpdatedAfterPublication && p.state.PRNumber == state.PRNumber && p.state.CloseAttempted == state.CloseAttempted && p.state.ProjectDoneAttempted == state.ProjectDoneAttempted && p.state.IssueComment == state.IssueComment {
+	if p.state.CommentID > 0 && p.state.Status == state.Status && p.state.Decision == state.Decision && p.state.CandidateDigest == state.CandidateDigest && p.state.Branch == state.Branch && p.state.CommitSHA == state.CommitSHA && p.state.MergedHeadSHA == state.MergedHeadSHA && p.state.UpdatedAfterPublication == state.UpdatedAfterPublication && p.state.PRNumber == state.PRNumber && p.state.CloseAttempted == state.CloseAttempted && p.state.ProjectDoneAttempted == state.ProjectDoneAttempted && p.state.IssueComment == state.IssueComment && p.state.RunSignature == state.RunSignature {
 		return p.journal(action, "observed")
 	}
 	if e := p.begin(action); e != nil {
@@ -216,7 +240,7 @@ func (p *publisher) saveState(ctx context.Context, state Publication) error {
 	if e != nil {
 		return e
 	}
-	if !found || p.state.Status != expected.Status || p.state.Decision != expected.Decision || p.state.CandidateDigest != expected.CandidateDigest || p.state.CommitSHA != expected.CommitSHA || p.state.MergedHeadSHA != expected.MergedHeadSHA || p.state.UpdatedAfterPublication != expected.UpdatedAfterPublication || p.state.PRNumber != expected.PRNumber || p.state.Branch != expected.Branch || p.state.CloseAttempted != expected.CloseAttempted || p.state.ProjectDoneAttempted != expected.ProjectDoneAttempted || p.state.IssueComment != expected.IssueComment {
+	if !found || p.state.Status != expected.Status || p.state.Decision != expected.Decision || p.state.CandidateDigest != expected.CandidateDigest || p.state.CommitSHA != expected.CommitSHA || p.state.MergedHeadSHA != expected.MergedHeadSHA || p.state.UpdatedAfterPublication != expected.UpdatedAfterPublication || p.state.PRNumber != expected.PRNumber || p.state.Branch != expected.Branch || p.state.CloseAttempted != expected.CloseAttempted || p.state.ProjectDoneAttempted != expected.ProjectDoneAttempted || p.state.IssueComment != expected.IssueComment || p.state.RunSignature != expected.RunSignature {
 		if requestErr != nil {
 			return fmt.Errorf("state update result is uncertain: %w", requestErr)
 		}
@@ -225,6 +249,14 @@ func (p *publisher) saveState(ctx context.Context, state Publication) error {
 	return p.journal(action, "observed")
 }
 func notFound(err error) bool { var h *fixer.HTTPError; return errors.As(err, &h) && h.Status == 404 }
+
+func documentationSignature(runDir string, candidate Candidate) (agentsignature.Signature, error) {
+	if candidate.Report.Request.DocumentationEntry.Route == "docs-no-change" && candidate.jev != nil {
+		return agentsignature.FromJev(*candidate.jev), nil
+	}
+	return agentsignature.ReadRun(runDir)
+}
+
 func Publish(ctx context.Context, c *Client, plan Plan, runDir string, options PublishOptions) (Publication, error) {
 	p := &publisher{client: c, plan: plan, runDir: runDir}
 	p.state = Publication{PlanID: plan.ID, Status: "planned"}
@@ -237,7 +269,7 @@ func Publish(ctx context.Context, c *Client, plan Plan, runDir string, options P
 	}
 	p.state.CandidateDigest = candidate.Digest
 	p.state.Decision = candidate.Report.Documentation.Decision
-	p.state.IssueComment = candidate.Report.Documentation.IssueComment
+	p.state.IssueComment = agentsignature.Strip(candidate.Report.Documentation.IssueComment)
 	current, e := Revalidate(ctx, c, plan)
 	if e != nil {
 		return p.state, e
@@ -281,7 +313,13 @@ func Publish(ctx context.Context, c *Client, plan Plan, runDir string, options P
 				return p.state, fmt.Errorf("another documentation plan is active; reconcile it first")
 			}
 		}
-		p.state = Publication{PlanID: plan.ID, CandidateDigest: candidate.Digest, Status: "publishing", Decision: candidate.Report.Documentation.Decision, InitialIssueState: current.IssueState, IssueComment: candidate.Report.Documentation.IssueComment}
+		signature, err := documentationSignature(runDir, candidate)
+		if err != nil {
+			return p.state, fmt.Errorf("read documentation run usage: %w", err)
+		}
+		p.state.InitialIssueState = current.IssueState
+		p.state.Status = "publishing"
+		p.state.RunSignature = signature.Line()
 		if e = p.saveState(ctx, p.state); e != nil {
 			return p.state, e
 		}
@@ -396,7 +434,10 @@ func (p *publisher) publishPR(ctx context.Context, candidate Candidate) error {
 		pr = candidatePR
 	}
 	if pr.Number == 0 {
-		body := candidate.Report.Documentation.PRBody + fmt.Sprintf("\n\nRelated #%d\n\n%s", p.plan.IssueNumber, marker(p.plan))
+		body := agentsignature.Strip(candidate.Report.Documentation.PRBody) + fmt.Sprintf("\n\nRelated #%d\n\n%s", p.plan.IssueNumber, marker(p.plan))
+		if state.RunSignature != "" {
+			body += "\n\n" + state.RunSignature
+		}
 		if e = validateDocumentationPRBody(body); e != nil {
 			return e
 		}

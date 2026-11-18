@@ -64,17 +64,18 @@ type Answer struct {
 	Source string `json:"source"`
 }
 type Decision struct {
-	ID              string  `json:"id"`
-	Version         int     `json:"version"`
-	ContractVersion int     `json:"contractVersion"`
-	Reason          string  `json:"reason"`
-	Question        string  `json:"question"`
-	ResumeCondition string  `json:"resumeCondition"`
-	Kind            string  `json:"kind"`
-	Status          string  `json:"status"`
-	Answer          *Answer `json:"answer"`
-	Basis           string  `json:"basis,omitempty"`
-	EvidenceRef     string  `json:"evidenceRef,omitempty"`
+	ID              string            `json:"id"`
+	Version         int               `json:"version"`
+	ContractVersion int               `json:"contractVersion"`
+	Reason          string            `json:"reason"`
+	Question        string            `json:"question"`
+	ResumeCondition string            `json:"resumeCondition"`
+	Kind            string            `json:"kind"`
+	Status          string            `json:"status"`
+	Answer          *Answer           `json:"answer"`
+	Basis           string            `json:"basis,omitempty"`
+	EvidenceRef     string            `json:"evidenceRef,omitempty"`
+	PilotResult     *PilotIssueResult `json:"pilotResult,omitempty"`
 }
 type StopEpisode struct {
 	ID         string `json:"id"`
@@ -86,12 +87,14 @@ type EffectPayload struct {
 	ContractVersion int    `json:"contractVersion,omitempty"`
 	TrustedSHA      string `json:"trustedSha,omitempty"`
 	CandidateSHA    string `json:"candidateSha,omitempty"`
+	DecisionID      string `json:"decisionId,omitempty"`
 }
 type EffectResult struct {
 	RunID       int64  `json:"runId,omitempty"`
 	RunAttempt  int    `json:"runAttempt,omitempty"`
 	Conclusion  string `json:"conclusion,omitempty"`
 	PullRequest int64  `json:"pullRequest,omitempty"`
+	CommentID   int64  `json:"commentId,omitempty"`
 }
 type Effect struct {
 	ID          string        `json:"id"`
@@ -140,26 +143,27 @@ type Source struct {
 	CallbackID int64  `json:"callbackId,omitempty"`
 }
 type Event struct {
-	Type            string          `json:"type"`
-	Actor           string          `json:"actor,omitempty"`
-	Source          Source          `json:"source"`
-	ExecutionID     string          `json:"executionId,omitempty"`
-	Generation      int             `json:"generation,omitempty"`
-	ContractVersion int             `json:"contractVersion,omitempty"`
-	EffectID        string          `json:"effectId,omitempty"`
-	EffectResult    *EffectResult   `json:"effectResult,omitempty"`
-	Result          string          `json:"result,omitempty"`
-	Requirements    string          `json:"requirements,omitempty"`
-	QuestionID      string          `json:"questionId,omitempty"`
-	QuestionVersion int             `json:"questionVersion,omitempty"`
-	Question        string          `json:"question,omitempty"`
-	Reason          string          `json:"reason,omitempty"`
-	ResumeCondition string          `json:"resumeCondition,omitempty"`
-	Answer          string          `json:"answer,omitempty"`
-	Basis           string          `json:"basis,omitempty"`
-	EvidenceRef     string          `json:"evidenceRef,omitempty"`
-	Manifest        *Manifest       `json:"manifest,omitempty"`
-	PilotCandidate  *PilotCandidate `json:"pilotCandidate,omitempty"`
+	Type             string            `json:"type"`
+	Actor            string            `json:"actor,omitempty"`
+	Source           Source            `json:"source"`
+	ExecutionID      string            `json:"executionId,omitempty"`
+	Generation       int               `json:"generation,omitempty"`
+	ContractVersion  int               `json:"contractVersion,omitempty"`
+	EffectID         string            `json:"effectId,omitempty"`
+	EffectResult     *EffectResult     `json:"effectResult,omitempty"`
+	Result           string            `json:"result,omitempty"`
+	Requirements     string            `json:"requirements,omitempty"`
+	QuestionID       string            `json:"questionId,omitempty"`
+	QuestionVersion  int               `json:"questionVersion,omitempty"`
+	Question         string            `json:"question,omitempty"`
+	Reason           string            `json:"reason,omitempty"`
+	ResumeCondition  string            `json:"resumeCondition,omitempty"`
+	Answer           string            `json:"answer,omitempty"`
+	Basis            string            `json:"basis,omitempty"`
+	EvidenceRef      string            `json:"evidenceRef,omitempty"`
+	Manifest         *Manifest         `json:"manifest,omitempty"`
+	PilotCandidate   *PilotCandidate   `json:"pilotCandidate,omitempty"`
+	PilotIssueResult *PilotIssueResult `json:"pilotIssueResult,omitempty"`
 }
 type TransitionContext struct {
 	Task                Seed

@@ -80,6 +80,7 @@ func ValidateState(s *State) error {
 	}
 	ids = map[string]bool{}
 	decisions := map[string]Decision{}
+	reportedRuns := map[RunIdentity]bool{}
 	for _, d := range s.Decisions {
 		if !unique(d.ID) || d.Version <= 0 || d.ContractVersion <= 0 || d.ContractVersion > c.Version || !contains(StopReasons, d.Reason) || !contains([]string{"decision", "authorization", "no-change"}, d.Kind) || !contains([]string{"open", "answered", "superseded"}, d.Status) || !nonempty(d.Question) || !nonempty(d.ResumeCondition) {
 			return bad("decision")
@@ -93,6 +94,12 @@ func ValidateState(s *State) error {
 		if d.Kind == "no-change" && (!contains([]string{"already-fixed", "expected-behavior", "duplicate", "unreachable"}, d.Basis) || !nonempty(d.EvidenceRef)) {
 			return bad("decision.evidence")
 		}
+		if report := d.PilotResult; report != nil {
+			if !validPilotIssueResult(report) || d.Kind != "decision" || !contains([]string{"decision-required", "verification-blocked"}, d.Reason) || reportedRuns[report.Run] {
+				return bad("decision.pilotResult")
+			}
+			reportedRuns[report.Run] = true
+		}
 		decisions[d.ID] = d
 	}
 	ids = map[string]bool{}
@@ -103,12 +110,13 @@ func ValidateState(s *State) error {
 		}
 	}
 	ids = map[string]bool{}
+	reportDecisions := map[string]bool{}
 	for _, e := range s.Effects {
 		x, ok := executions[e.ExecutionID]
-		if !unique(e.ID) || !ok || e.Generation <= 0 || e.Generation > s.Generation || !contains([]string{"dispatch", "cancel", "publish"}, e.Kind) || !contains([]string{"pending", "confirmed", "superseded"}, e.Status) {
+		if !unique(e.ID) || !ok || e.Generation <= 0 || e.Generation > s.Generation || !contains([]string{"dispatch", "cancel", "publish", "report-pilot"}, e.Kind) || !contains([]string{"pending", "confirmed", "superseded"}, e.Status) {
 			return bad("effect")
 		}
-		if e.Status == "pending" && e.Kind != "cancel" && e.Generation != s.Generation {
+		if e.Status == "pending" && !continuesAfterGeneration(e.Kind) && e.Generation != s.Generation {
 			return bad("effect.generation")
 		}
 		if e.Kind == "dispatch" && (e.Payload.ContractVersion != x.ContractVersion || e.Payload.TrustedSHA != x.TrustedSHA || e.Generation != x.Generation) {
@@ -125,6 +133,16 @@ func ValidateState(s *State) error {
 		if e.Kind == "publish" && (s.Candidate == nil || e.Payload.CandidateSHA != s.Candidate.CandidateSHA) && e.Status == "pending" {
 			return bad("effect.candidate")
 		}
+		if e.Kind == "report-pilot" {
+			d := decisions[e.Payload.DecisionID]
+			if d.PilotResult == nil || reportDecisions[d.ID] || e.Status == "superseded" || x.Mode != "pilot" || x.Run == nil || *x.Run != d.PilotResult.Run || x.ContractVersion != d.ContractVersion || x.Generation != e.Generation || (e.Result != nil && e.Result.CommentID <= 0) {
+				return bad("effect.pilotReport")
+			}
+			reportDecisions[d.ID] = true
+		}
+	}
+	if len(reportDecisions) != len(reportedRuns) {
+		return bad("effect.pilotReport")
 	}
 	ids = map[string]bool{}
 	for _, r := range s.Receipts {

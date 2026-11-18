@@ -484,6 +484,9 @@ func RunAction(ctx context.Context, mode string, cfg ActionConfig) (ActionResult
 			result, err = controller.Handle(ctx, *event)
 		}
 		output.Result = &result
+		if cfg.IsCompletionEvent() && err == nil && result.Disposition == "ignored" && result.State != nil {
+			err = session.adapter.repairPilotReport(ctx, RunIdentity{RunID: session.run.ID, RunAttempt: session.run.RunAttempt})
+		}
 		if err == nil && result.State != nil && result.Disposition != "recovery-required" {
 			err = SyncStopLabels(ctx, cfg.Client, session.issue.Number, result.State)
 		}
@@ -553,7 +556,7 @@ func (s *actionSession) handleWorkerResult(ctx context.Context, controller *Cont
 	if result != nil && s.validateCheckpoint(&result.Checkpoint) == nil && result.Outcome == "author-reported-fixed" {
 		event := s.callback("pilot-candidate", 4)
 		event.PilotCandidate = &PilotCandidate{ExecutionID: s.execution.ID, Generation: s.execution.Generation, ContractVersion: s.execution.ContractVersion,
-			Run: *s.execution.Run, ArtifactID: id, CandidateSHA256: result.CandidateSHA256, ReportSHA256: result.ReportSHA256}
+			Run: *s.execution.Run, ArtifactID: id, CandidateSHA256: result.CandidateSHA256, ReportSHA256: result.ReportSHA256, Signature: result.Signature}
 		observed, err := controller.Handle(ctx, event)
 		if err != nil || observed.Disposition != "ignored" {
 			return observed, err
@@ -573,6 +576,9 @@ func (s *actionSession) handleWorkerResult(ctx context.Context, controller *Cont
 			decision.Reason = "verification-blocked"
 		}
 		decision.ResumeCondition = "An allowed user answers this question or stops the task."
+		if result.Signature != nil {
+			decision.PilotIssueResult = &PilotIssueResult{Run: *s.execution.Run, ArtifactID: id, ReportSHA256: result.ReportSHA256, Signature: *result.Signature}
+		}
 		return controller.Handle(ctx, decision)
 	}
 	decision.Reason = "verification-blocked"

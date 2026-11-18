@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentsignature"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
 )
 
@@ -21,6 +22,7 @@ type Options struct {
 	Repository, DefaultBranch, Workspace, Base string
 	Issue, Run, Attempt                        int64
 	Scope                                      []string
+	Signature                                  *agentsignature.Signature
 }
 type Published struct {
 	Number int64  `json:"number"`
@@ -67,6 +69,9 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 	var out Published
 	if o.Issue <= 0 || o.Run <= 0 || o.Attempt <= 0 || o.DefaultBranch == "" || strings.Count(o.Repository, "/") != 1 {
 		return out, fmt.Errorf("invalid publication identity")
+	}
+	if o.Signature != nil && (o.Signature.Validate() != nil || o.Signature.Line() == "") {
+		return out, fmt.Errorf("invalid draft signature")
 	}
 	if err := Validate(c, o.Base, o.Scope); err != nil {
 		return out, err
@@ -232,9 +237,13 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 		if len([]rune(title)) > 90 {
 			title = string([]rune(title)[:90])
 		}
-		body := fmt.Sprintf("Closes #%d\n\n[Agent report and evidence](https://github.com/%s/actions/runs/%d/attempts/%d)\n\n%s", o.Issue, o.Repository, o.Run, o.Attempt, marker)
+		body := fmt.Sprintf("Closes #%d\n\n[Author report and evidence](https://github.com/%s/actions/runs/%d/attempts/%d)", o.Issue, o.Repository, o.Run, o.Attempt)
 		if parent != o.Base {
 			body += fmt.Sprintf("\n\nProduct validated at `%s`. Publication includes controller updates through `%s`.", o.Base, parent)
+		}
+		body += "\n\n" + marker
+		if o.Signature != nil {
+			body = o.Signature.Append(body)
 		}
 		createErr := api.Request(ctx, "POST", "/pulls", map[string]any{"title": "fix: " + title, "head": branch, "base": o.DefaultBranch, "draft": true, "body": body}, nil)
 		prs, err = api.List(ctx, query, "")
@@ -260,8 +269,22 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 	if err = json.Unmarshal(prs[0], &pr); err != nil {
 		return out, err
 	}
-	if pr.Number <= 0 || pr.State != "open" || !pr.Draft || pr.Head.SHA != head.Object.SHA || pr.Head.Ref != branch || pr.Base.Ref != o.DefaultBranch || pr.Head.Repo.FullName != o.Repository || pr.Base.Repo.FullName != o.Repository || !strings.Contains(pr.Body, marker) {
+	matches := func() bool {
+		return pr.Number > 0 && pr.State == "open" && pr.Draft && pr.Head.SHA == head.Object.SHA && pr.Head.Ref == branch && pr.Base.Ref == o.DefaultBranch && pr.Head.Repo.FullName == o.Repository && pr.Base.Repo.FullName == o.Repository && strings.Contains(pr.Body, marker)
+	}
+	if !matches() {
 		return out, fmt.Errorf("pull request differs from the recorded draft")
+	}
+	if o.Signature != nil {
+		signed := o.Signature.Append(pr.Body)
+		if signed != pr.Body {
+			number := pr.Number
+			path := fmt.Sprintf("/pulls/%d", number)
+			updateErr := api.Request(ctx, "PATCH", path, map[string]string{"body": signed}, nil)
+			if err := api.Request(ctx, "GET", path, nil, &pr); err != nil || pr.Number != number || !matches() || pr.Body != signed {
+				return out, errors.Join(updateErr, err, fmt.Errorf("draft signature update could not be confirmed"))
+			}
+		}
 	}
 	return Published{Number: pr.Number, SHA: head.Object.SHA, Branch: branch, URL: pr.URL}, nil
 }

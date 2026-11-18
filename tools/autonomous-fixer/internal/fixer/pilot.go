@@ -9,17 +9,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentsignature"
 )
 
 const MaxPilotCandidateBytes = 24 * 1024 * 1024
 const maxPilotReportBytes = 4 * 1024 * 1024
 
 type PilotResult struct {
-	Checkpoint      Checkpoint `json:"checkpoint"`
-	CandidateSHA256 string     `json:"candidateSha256,omitempty"`
-	ReportSHA256    string     `json:"reportSha256"`
-	Outcome         string     `json:"-"`
-	Summary         string     `json:"-"`
+	Checkpoint      Checkpoint                `json:"checkpoint"`
+	CandidateSHA256 string                    `json:"candidateSha256,omitempty"`
+	ReportSHA256    string                    `json:"reportSha256"`
+	Signature       *agentsignature.Signature `json:"signature,omitempty"`
+	Outcome         string                    `json:"-"`
+	Summary         string                    `json:"-"`
 }
 
 type PilotAnswer struct {
@@ -44,13 +47,21 @@ func pilotAnswers(state *State) []PilotAnswer {
 }
 
 type PilotCandidate struct {
-	ExecutionID     string      `json:"executionId"`
-	Generation      int         `json:"generation"`
-	ContractVersion int         `json:"contractVersion"`
-	Run             RunIdentity `json:"run"`
-	ArtifactID      int64       `json:"artifactId"`
-	CandidateSHA256 string      `json:"candidateSha256"`
-	ReportSHA256    string      `json:"reportSha256"`
+	ExecutionID     string                    `json:"executionId"`
+	Generation      int                       `json:"generation"`
+	ContractVersion int                       `json:"contractVersion"`
+	Run             RunIdentity               `json:"run"`
+	ArtifactID      int64                     `json:"artifactId"`
+	CandidateSHA256 string                    `json:"candidateSha256"`
+	ReportSHA256    string                    `json:"reportSha256"`
+	Signature       *agentsignature.Signature `json:"signature,omitempty"`
+}
+
+type PilotIssueResult struct {
+	Run          RunIdentity              `json:"run"`
+	ArtifactID   int64                    `json:"artifactId"`
+	ReportSHA256 string                   `json:"reportSha256"`
+	Signature    agentsignature.Signature `json:"signature"`
 }
 
 type PilotPublication struct {
@@ -81,12 +92,19 @@ func validatePilotCandidate(state *State, candidate PilotCandidate) error {
 	if candidate.ArtifactID <= 0 || !digestPattern.MatchString(candidate.CandidateSHA256) || !digestPattern.MatchString(candidate.ReportSHA256) || candidate.Generation != state.Generation || candidate.ContractVersion != state.Contract.Version {
 		return fmt.Errorf("pilot candidate does not match the active contract")
 	}
+	if candidate.Signature != nil && (candidate.Signature.Validate() != nil || candidate.Signature.Line() == "") {
+		return fmt.Errorf("invalid pilot candidate signature")
+	}
 	for _, execution := range state.Executions {
 		if execution.ID == candidate.ExecutionID && execution.Mode == "pilot" && execution.AttemptID == state.Attempt.ID && execution.Run != nil && *execution.Run == candidate.Run && execution.Generation == candidate.Generation && execution.ContractVersion == candidate.ContractVersion {
 			return nil
 		}
 	}
 	return fmt.Errorf("pilot candidate does not match an admitted execution")
+}
+
+func validPilotIssueResult(result *PilotIssueResult) bool {
+	return result != nil && result.Run.RunID > 0 && result.Run.RunAttempt > 0 && result.ArtifactID > 0 && digestPattern.MatchString(result.ReportSHA256) && result.Signature.Validate() == nil && result.Signature.Line() != ""
 }
 
 func ReadPilotFile(path string, limit int64) ([]byte, error) {
@@ -180,5 +198,9 @@ func LoadPilotResult(dir string) (PilotResult, error) {
 	if sealed.CandidateSHA256 != result.CandidateSHA256 || sealed.ReportSHA256 != result.ReportSHA256 {
 		return result, fmt.Errorf("pilot package or author report differs from the sealed result")
 	}
+	if result.Signature != nil && (result.Signature.Validate() != nil || result.Signature.Line() == "") {
+		return result, fmt.Errorf("invalid pilot result signature")
+	}
+	sealed.Signature = result.Signature
 	return sealed, nil
 }

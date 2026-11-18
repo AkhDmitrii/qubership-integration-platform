@@ -7,11 +7,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentsignature"
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
 )
 
 func repo(t *testing.T) (Options, Candidate, string) {
@@ -64,6 +66,7 @@ type githubFixture struct {
 	tree, tip, branch, body, message string
 	pulls                            []json.RawMessage
 	writes, created                  int
+	updated                          int
 	loseCreateReply, removed         bool
 }
 
@@ -143,8 +146,29 @@ func (g *githubFixture) Request(ctx context.Context, method, path string, body, 
 			return fmt.Errorf("reply lost")
 		}
 		return nil
+	case path == "/pulls/27" && len(g.pulls) == 1:
+		if method == "PATCH" {
+			g.updated++
+			if err := g.editBody(body.(map[string]string)["body"]); err != nil {
+				return err
+			}
+		}
+		return assign(target, g.pulls[0])
 	}
 	return fmt.Errorf("unexpected request %s %s", method, path)
+}
+
+func (g *githubFixture) editBody(body string) error {
+	var draft map[string]any
+	if err := json.Unmarshal(g.pulls[0], &draft); err != nil {
+		return err
+	}
+	draft["body"], g.body = body, body
+	data, err := json.Marshal(draft)
+	if err == nil {
+		g.pulls[0] = data
+	}
+	return err
 }
 func (g *githubFixture) List(ctx context.Context, path, key string) ([]json.RawMessage, error) {
 	if !strings.Contains(path, "state=all") {
@@ -179,6 +203,34 @@ func TestCandidateRoundTripAndRepeatPublication(t *testing.T) {
 	}
 	if g.created != 1 || !strings.Contains(g.body, "Closes #12") {
 		t.Fatal(g.created, g.body)
+	}
+}
+
+func TestDraftSignatureAppendedOnceAndRestoredOnRecovery(t *testing.T) {
+	o, c, tree := repo(t)
+	cost := 0.00424
+	o.Signature = &agentsignature.Signature{Model: "openai/gpt-6", Effort: "high", USD: &cost}
+	g := &githubFixture{o: o, tree: tree, loseCreateReply: true}
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, err := Publish(ctx, g, c, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	line := "<sub>🤖 openai/gpt-6 high usd=0.0042</sub>"
+	marker := "<!-- qip-fix:12:345:1 -->"
+	if g.created != 1 || g.updated != 0 || !strings.HasSuffix(g.body, marker+"\n\n"+line) {
+		t.Fatal("draft creation did not keep exactly one signature after the marker", g.body)
+	}
+	edited := agentsignature.Strip(g.body) + "\n\nMaintainer note."
+	if err := g.editBody(edited); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Publish(ctx, g, c, o); err != nil {
+		t.Fatal(err)
+	}
+	if g.created != 1 || g.updated != 1 || g.body != edited+"\n\n"+line || strings.Count(g.body, line) != 1 {
+		t.Fatal("draft recovery recreated the PR, lost the edit, or duplicated the signature", g.body)
 	}
 }
 func TestRejectBeforePublishing(t *testing.T) {

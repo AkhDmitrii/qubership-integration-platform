@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentsignature"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
 	hc "github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/hostedcandidate"
 )
@@ -65,7 +66,15 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		result, err := hc.Publish(ctx, api, c, hc.Options{Workspace: *workspace, Base: *base, Issue: *issue, Run: *id, Attempt: *attempt, Scope: fixer.ParseScopes(*scope), DefaultBranch: *branch, Repository: *repo})
+		var signature *agentsignature.Signature
+		if input := os.Getenv("AGENT_RESULT_SIGNATURE"); input != "" {
+			var parsed agentsignature.Signature
+			if err := fixer.DecodeJSON([]byte(input), &parsed); err != nil {
+				return err
+			}
+			signature = &parsed
+		}
+		result, err := hc.Publish(ctx, api, c, hc.Options{Workspace: *workspace, Base: *base, Issue: *issue, Run: *id, Attempt: *attempt, Scope: fixer.ParseScopes(*scope), DefaultBranch: *branch, Repository: *repo, Signature: signature})
 		if err != nil {
 			return err
 		}

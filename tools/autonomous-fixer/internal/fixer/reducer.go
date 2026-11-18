@@ -48,12 +48,16 @@ func dispatch(s *State) {
 }
 func supersede(s *State) {
 	for i := range s.Effects {
-		if s.Effects[i].Status == "pending" && s.Effects[i].Kind != "cancel" {
+		if s.Effects[i].Status == "pending" && !continuesAfterGeneration(s.Effects[i].Kind) {
 			s.Effects[i].Status = "superseded"
 		}
 	}
 	s.Candidate = nil
 	s.PilotCandidate = nil
+}
+
+func continuesAfterGeneration(kind string) bool {
+	return kind == "cancel" || kind == "report-pilot"
 }
 func question(s *State, id, reason, text, condition, kind string) *Decision {
 	s.Decisions = append(s.Decisions, Decision{ID: id, Version: 1, ContractVersion: s.Contract.Version, Reason: reason, Question: text, ResumeCondition: condition, Kind: kind, Status: "open"})
@@ -115,7 +119,7 @@ func Transition(previous *State, event Event, context TransitionContext) (Result
 		for i := range s.Effects {
 			e := &s.Effects[i]
 			if e.ID == event.EffectID && e.Status == "pending" {
-				if e.Kind != "cancel" && e.Generation != s.Generation {
+				if !continuesAfterGeneration(e.Kind) && e.Generation != s.Generation {
 					return reject("Effect generation is stale.")
 				}
 				e.Status = "confirmed"
@@ -415,7 +419,14 @@ func Transition(previous *State, event Event, context TransitionContext) (Result
 		if !contains(StopReasons, reason) {
 			return reject("Unknown stop reason.")
 		}
+		if event.PilotIssueResult != nil && (!validPilotIssueResult(event.PilotIssueResult) || event.Type != "decision-request" || e.Mode != "pilot" || event.PilotIssueResult.Run != *e.Run || !contains([]string{"decision-required", "verification-blocked"}, reason)) {
+			return reject("The signed report does not match this worker decision.")
+		}
 		d := question(s, event.QuestionID, reason, event.Question, event.ResumeCondition, kind)
+		if event.PilotIssueResult != nil {
+			d.PilotResult = event.PilotIssueResult
+			addEffect(s, "report-pilot", *e, EffectPayload{DecisionID: d.ID})
+		}
 		if kind == "no-change" {
 			d.Basis = event.Basis
 			d.EvidenceRef = event.EvidenceRef

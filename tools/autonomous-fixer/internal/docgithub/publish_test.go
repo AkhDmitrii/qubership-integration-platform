@@ -213,6 +213,15 @@ func TestPublishNoChangeIsIdempotentForClosedIssue(t *testing.T) {
 	if a.commentCreates != 1 || a.prCreates != 0 || a.closeCalls != 0 || a.doneCalls != 1 || a.project != "DONE" {
 		t.Fatalf("%+v", a)
 	}
+	const signature = "<sub>🤖 typesafe/jev-1.14 out=30 usd=0.0042</sub>"
+	body := a.comments[0].Body
+	if !strings.HasSuffix(body, "\n\n"+signature) || strings.Count(body, "<sub>🤖") != 1 {
+		t.Fatalf("Jev-only comment does not carry exactly one last-line signature: %s", body)
+	}
+	result, e := Reconcile(context.Background(), c, plan, PublishOptions{Actor: "alice", Apply: true})
+	if e != nil || result.Status != "completed" || a.comments[0].Body != body {
+		t.Fatalf("reconciliation changed the signed result: %s, %v", result.Status, e)
+	}
 }
 func TestPublishOpenIssueClosesAfterComment(t *testing.T) {
 	plan, run, _ := publicationFixture(t, false)
@@ -266,6 +275,11 @@ func TestDocsPRWaitsForMergeAndRecoversUncertainCreate(t *testing.T) {
 	if a.prCreates != 1 || a.doneCalls != 0 || a.closeCalls != 0 {
 		t.Fatal("PR was duplicated or task completed before merge")
 	}
+	prBody := a.pr.Body
+	const signature = "<sub>🤖 gpt-6.1-terra high out=60</sub>"
+	if !strings.HasSuffix(prBody, marker(plan)+"\n\n"+signature) || strings.Count(prBody, "<sub>🤖") != 1 {
+		t.Fatalf("missing author signature on the final PR line: %s", prBody)
+	}
 	a.pr.Merged = true
 	a.pr.State = "closed"
 	a.pr.MergeCommitSHA = strings.Repeat("f", 40)
@@ -276,8 +290,8 @@ func TestDocsPRWaitsForMergeAndRecoversUncertainCreate(t *testing.T) {
 			t.Fatal(result, e)
 		}
 	}
-	if a.doneCalls != 1 {
-		t.Fatal("merge completion repeated")
+	if a.doneCalls != 1 || a.pr.Body != prBody || strings.Contains(a.comments[0].Body, "<sub>🤖") {
+		t.Fatal("merge completion repeated the signature or updated the PR")
 	}
 }
 func TestDryRunAndClosedUnmergedPR(t *testing.T) {
@@ -294,6 +308,33 @@ func TestDryRunAndClosedUnmergedPR(t *testing.T) {
 	result, e = Reconcile(context.Background(), c, plan, PublishOptions{Actor: "alice", Apply: true})
 	if e != nil || result.Status != "needs-human" || a.doneCalls != 0 {
 		t.Fatal(result, e)
+	}
+	if !strings.Contains(a.pr.Body, "<sub>🤖 gpt-6.1-terra high") || strings.Contains(a.comments[0].Body, "<sub>🤖") || a.commentCreates != 1 {
+		t.Fatal("the closed PR status repeated or replaced the run signature")
+	}
+}
+
+func TestReconcileEditsTheSignedNoChangeCommentInPlace(t *testing.T) {
+	plan, _, _ := publicationFixture(t, false)
+	c, api := apiFixture(t, plan)
+	ctx := context.Background()
+	const signature = "<sub>🤖 typesafe/jev-1.14 out=30 usd=0.0042</sub>"
+	p := &publisher{client: c, plan: plan, state: Publication{
+		Decision: "no_change", Status: "publishing", CandidateDigest: "candidate", InitialIssueState: "closed",
+		IssueComment: "Help already describes the behavior.\n\n<sub>🤖 draft-model in=999</sub>", RunSignature: signature,
+	}}
+	if e := p.saveState(ctx, p.state); e != nil {
+		t.Fatal(e)
+	}
+	recovered, e := RecoverPlan(ctx, c, plan.IssueNumber)
+	if e != nil || recovered.ID != plan.ID {
+		t.Fatalf("could not recover the signed plan: %v", e)
+	}
+	result, e := Reconcile(ctx, c, recovered, PublishOptions{Actor: "alice", Apply: true})
+	body := api.comments[0].Body
+	if e != nil || result.Status != "completed" || api.commentCreates != 1 || !strings.Contains(body, "**completed**") ||
+		!strings.HasSuffix(body, "\n\n"+signature) || strings.Count(body, "<sub>🤖") != 1 {
+		t.Fatalf("reconciliation lost or duplicated signed totals: %s, %v", body, e)
 	}
 }
 

@@ -103,6 +103,7 @@ jobs:
         if: steps.authorize.outputs.process == 'true'
         env:
           AGENT_PUBLICATION_TOKEN: ${{ secrets.AGENT_PUBLICATION_TOKEN }}
+          AGENT_RESULT_SIGNATURE: ${{ steps.authorize.outputs.result_signature }}
           BASE_SHA: ${{ steps.authorize.outputs.base_sha }}
           CANDIDATE_SHA256: ${{ steps.authorize.outputs.candidate_sha256 }}
           DEFAULT_BRANCH: ${{ steps.authorize.outputs.default_branch }}

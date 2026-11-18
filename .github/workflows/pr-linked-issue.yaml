@@ -154,7 +154,9 @@ jobs:
           patch_failed=false
           if [ -n "$issues" ]; then
             keywords=$(for number in $issues; do echo "Closes #$number"; done)
-            if [ -n "$body" ]; then
+            if [[ ${body##*$'\n'} == '<sub>🤖 '*'</sub>' ]]; then
+              new_body=$(printf '%s\n\n%s' "$keywords" "$body")
+            elif [ -n "$body" ]; then
               new_body=$(printf '%s\n\n%s' "$body" "$keywords")
             else
               new_body="$keywords"

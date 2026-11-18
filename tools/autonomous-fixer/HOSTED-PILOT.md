@@ -39,4 +39,17 @@ The inference process uses a loopback relay for its configured models. The real 
 
 The worker seals its run identity and author report. For a claimed fix it also packages the candidate's regular-file edits relative to the authorized commit. The publisher verifies the recorded artifact identity and digest, reconstructs the actual tree in a temporary index against the trusted base, checks every changed path against the issue scope, and compares the tree returned by GitHub. It seeds a run-specific branch from an existing base commit and fast-forwards it to the validated candidate. When only the fixer tooling or its three control/work/publish workflows advanced, it can seed from the current tip and replay the same product edits. The PR body records both commits. A repeated publication reads back the same branch and PR. An unrelated commit on the default branch leaves the pinned candidate intact. If the default branch has been rewritten and no longer contains the admitted base, the publisher stops.
 
-The runner is ephemeral. A restart gets a fresh checkout and stand. The native role assignment, provider charges and final PR behavior on the selected real GitHub repository must be verified in the first hosted run.
+The runner is ephemeral. A restart gets a fresh checkout and stand. The first [fork run](https://github.com/AkhDmitrii/qubership-integration-platform/actions/runs/44315529424) exercised the real stand, author and reviewers. OpenRouter billed $0.35611274 for 74 requests. [Draft PR #2](https://github.com/AkhDmitrii/qubership-integration-platform/pull/2) used the original candidate after an operator reconciled the missing completion notification and retried publication. Test automatic delivery on a new issue before relying on it.
+
+## GitHub result signatures
+
+The result publication follows the [AI agent comment signature specification](https://github.com/Netcracker/qubership-ai-packages/blob/main/research/ai-autonomous-design/README.md#ai-agent-comment-signatures).
+A completed fix reports its usage on the last line of the draft PR description. When an author stops for help, its issue result comment carries the footer. The state comment tracks control events. It does not repeat the PR's charges.
+
+Each footer identifies the main model and sums the available runtime measurements for the execution, including reviewer and retry requests. Cache reads have their own counter. Output includes reasoning. A missing value means the runtime could not establish a complete total. API-equivalent price estimates are not provider charges.
+
+To inspect the footer before delivery or recover it from a downloaded evidence artifact:
+
+```bash
+go -C tools/autonomous-fixer run ./cmd/agent-signature /absolute/path/to/result
+```

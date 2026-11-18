@@ -2,7 +2,6 @@ package docgithub
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -224,18 +223,11 @@ func RecoverPlan(ctx context.Context, c *Client, issue int) (Plan, error) {
 		if comment.User.ID != author.ID || !strings.HasPrefix(comment.Body, "<!-- qip-docs:") {
 			continue
 		}
-		prefix := "<!-- qip-docs-state:"
-		start := strings.LastIndex(comment.Body, prefix)
-		if start < 0 {
-			return Plan{}, fmt.Errorf("owned documentation state is malformed")
-		}
-		encoded := strings.TrimSuffix(strings.TrimSpace(comment.Body[start+len(prefix):]), "-->")
-		data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+		state, err := decodePublicationState(comment.Body)
 		if err != nil {
 			return Plan{}, err
 		}
-		var state Publication
-		if json.Unmarshal(data, &state) != nil || state.Plan == nil {
+		if state.Plan == nil {
 			return Plan{}, fmt.Errorf("owned documentation state has no recoverable plan")
 		}
 		plan := *state.Plan

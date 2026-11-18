@@ -13,7 +13,7 @@ import (
 )
 
 func TestDocumentationGateRequiresPublicationAndHelpOnlyFiles(t *testing.T) {
-	for _, damage := range []string{"", "publishing_before_pr_recorded", "foreign_pr", "foreign_comment", "head", "rename_outside", "incomplete_files", "unmarked", "appended_help", "appended_outside", "rewritten_head", "closing_keyword", "closing_keyword_colon"} {
+	for _, damage := range []string{"", "signed_pr", "publishing_before_pr_recorded", "foreign_pr", "foreign_comment", "head", "rename_outside", "incomplete_files", "unmarked", "appended_help", "appended_outside", "rewritten_head", "closing_keyword", "closing_keyword_colon"} {
 		t.Run(damage, func(t *testing.T) {
 			p := Plan{PacketSHA256: strings.Repeat("c", 64), Version: "docs-plan-v2", IssueState: "closed", Repository: "org/repo", IssueNumber: 1, IssueNodeID: "ISSUE", IssueTitle: "Title", IssueBodyHash: Digest("body"), DefaultBranch: "main", BaseSHA: strings.Repeat("a", 40), Project: Project{ID: "P", ItemID: "I", StatusFieldID: "F", ReviewOptionID: "R", DoneOptionID: "D"}, ImplementingPRs: []docpacket.PR{{Number: 2, MergeSHA: strings.Repeat("a", 40), Target: "main"}}}
 			p.ID = Digest(p)
@@ -45,6 +45,8 @@ func TestDocumentationGateRequiresPublicationAndHelpOnlyFiles(t *testing.T) {
 			}
 			body := "Related #1\n" + marker(p)
 			switch damage {
+			case "signed_pr":
+				body += "\n\n<sub>🤖 gpt-6.1-terra high in=300 out=60</sub>"
 			case "closing_keyword":
 				body += "\nCloses #1"
 			case "closing_keyword_colon":
@@ -82,7 +84,7 @@ func TestDocumentationGateRequiresPublicationAndHelpOnlyFiles(t *testing.T) {
 				t.Fatal(e)
 			}
 			e = VerifyDocumentationPR(context.Background(), &Client{API: api, Repository: "org/repo"}, 7, "agent-bot")
-			shouldPass := damage == "" || damage == "publishing_before_pr_recorded" || damage == "appended_help"
+			shouldPass := damage == "" || damage == "signed_pr" || damage == "publishing_before_pr_recorded" || damage == "appended_help"
 			if (e == nil) != shouldPass {
 				t.Fatalf("damage=%s err=%v", damage, e)
 			}

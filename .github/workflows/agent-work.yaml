@@ -232,6 +232,7 @@ jobs:
           AUTHOR_OUTCOME: ${{ steps.author.outcome }}
           AGENT_CHECKPOINT_PATH: ${{ runner.temp }}/qip-pilot/checkpoint.json
           AGENT_PILOT_ARTIFACT_DIR: ${{ runner.temp }}/qip-pilot/artifact
+          AGENT_PILOT_USAGE_DIR: ${{ runner.temp }}/qip-pilot/result
         run: |
           mkdir -m 700 "$AGENT_PILOT_ARTIFACT_DIR"
           cp "$RUNNER_TEMP/qip-pilot-evidence/result/report.json" "$AGENT_PILOT_ARTIFACT_DIR/report.json"

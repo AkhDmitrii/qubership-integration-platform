@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentsignature"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
 )
 
@@ -97,6 +98,18 @@ func run(ctx context.Context, args []string) error {
 		result, err := fixer.SealPilotResult(*checkpoint, artifactDir)
 		if err != nil {
 			return err
+		}
+		if usageDir := os.Getenv("AGENT_PILOT_USAGE_DIR"); usageDir != "" {
+			if !filepath.IsAbs(usageDir) {
+				return fmt.Errorf("pilot usage path must be absolute")
+			}
+			signature, err := agentsignature.ReadRun(usageDir)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Some pilot usage could not be read.")
+			}
+			if signature.Validate() == nil && signature.Line() != "" {
+				result.Signature = &signature
+			}
 		}
 		data, err := json.Marshal(result)
 		if err != nil {

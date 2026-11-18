@@ -10,7 +10,7 @@ import stat
 
 PREPARATION = ("bootstrap.log", "bootstrap.log.exit", "dependencies.log", "stand.log", "disk.txt", "controller.log")
 RESULT = ("report.json", "config.json", "provider-usage.json", "metrics.json")
-STAGE = ("profile.json", "process.json", "response-raw.txt")
+STAGE = ("profile.json", "process.json", "response-raw.txt", "observed-agent.json")
 PUBLIC_CONFIG = ("task_id", "task_kind", "workflow", "hosted")
 PROFILE_FIELDS = ("Runtime", "Model", "Effort")
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW

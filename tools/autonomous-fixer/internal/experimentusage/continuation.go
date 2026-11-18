@@ -154,7 +154,7 @@ func continuedUsage(runtime, expected, dir string, current Report) (Report, erro
 		for _, request := range requests {
 			r.addRequest(request.Model, request.Usage)
 			observed = sum(observed, request.Usage)
-			if request.Model != expected {
+			if expected != "" && request.Model != expected {
 				r.warn("session " + id + ": request model differs from the expected model")
 			}
 		}

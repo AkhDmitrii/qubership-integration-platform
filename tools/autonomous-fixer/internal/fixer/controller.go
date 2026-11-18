@@ -84,7 +84,7 @@ func (c *Controller) settle(ctx context.Context, state *State, executable map[st
 	}
 	pending := append([]Effect(nil), state.Effects...)
 	for _, effect := range pending {
-		if effect.Status != "pending" || (effect.Kind != "cancel" && effect.Generation != state.Generation) {
+		if effect.Status != "pending" || (!continuesAfterGeneration(effect.Kind) && effect.Generation != state.Generation) {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
