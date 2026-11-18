@@ -89,6 +89,8 @@ func autoDocumentationCandidates(paths []string) []DocMapping {
 		switch {
 		case source == "ui/src/pages/ChainGraphView.tsx" || strings.HasPrefix(source, "ui/src/components/graph/"):
 			page = "help/docs/01__Chains/1__Graph/readme.md"
+		case source == "ui/src/components/UserMenu.tsx":
+			page = "help/docs/00__Overview/2__General_Functions/readme.md"
 		case source == "ui/src/pages/Chains.tsx":
 			page = "help/docs/01__Chains/readme.md"
 		case source == "ui/src/pages/Masking.tsx":
@@ -345,7 +347,7 @@ func Build(ctx context.Context, c Config) (doctriage.Packet, BuildReport, error)
 		for _, changed := range p.ChangedPaths {
 			if (strings.HasPrefix(changed, "ui/src/pages/") || strings.HasPrefix(changed, "ui/src/components/admin_tools/") || strings.HasPrefix(changed, "ui/src/components/services/") || strings.HasPrefix(changed, "ui/src/components/dev_tools/") || strings.HasPrefix(changed, "ui/src/components/testing/") || (len(mapped) == 0 && !buildOnly(p.ChangedPaths) && !strings.HasPrefix(changed, "help/docs/") && !compressed(changed))) && !mapped[changed] {
 				p.Complete = false
-				p.Limitations = append(p.Limitations, "Automatic retrieval has no documentation mapping for UI page: "+changed)
+				p.Limitations = append(p.Limitations, "Automatic retrieval has no documentation mapping for changed source: "+changed)
 			}
 		}
 	}
