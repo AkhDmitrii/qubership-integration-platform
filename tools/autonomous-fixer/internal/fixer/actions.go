@@ -24,6 +24,10 @@ type ActionConfig struct {
 	PilotPublication                                         *PilotPublication
 }
 
+func (cfg ActionConfig) IsCompletionEvent() bool {
+	return cfg.EventName == "workflow_run" || (cfg.EventName == "workflow_dispatch" && cfg.Inputs["operation"] == "reconcile-run")
+}
+
 func (cfg ActionConfig) allowedActors(ctx context.Context) (string, error) {
 	enabled, err := cfg.Variables.RepositoryVariable(ctx, "AGENT_ENABLED")
 	if err != nil {
@@ -72,6 +76,7 @@ type actionSession struct {
 	state     *State
 	execution *Execution
 	run       *WorkflowRun
+	bot       GitHubUser
 }
 
 func PositiveID(value string) (int64, error) {
@@ -125,6 +130,7 @@ func loadAction(ctx context.Context, cfg ActionConfig) (*actionSession, error) {
 	if err != nil {
 		return nil, err
 	}
+	session.bot = bot
 	store := NewCommentStore(cfg.Client, cfg.Repository, issueNumber, bot.ID, fmt.Sprintf("qip-%d", issueNumber))
 	observed, err := store.ReadState(ctx)
 	if err != nil {
@@ -353,8 +359,8 @@ func RunAction(ctx context.Context, mode string, cfg ActionConfig) (ActionResult
 	controller := NewController(session.adapter)
 	switch mode {
 	case "route":
-		if cfg.EventName == "workflow_run" {
-			if err := session.worker(ctx, true); err != nil {
+		if cfg.IsCompletionEvent() {
+			if err := session.completion(ctx); err != nil {
 				return output, err
 			}
 			output.Outputs["run_id"] = strconv.FormatInt(session.run.ID, 10)
@@ -435,8 +441,8 @@ func RunAction(ctx context.Context, mode string, cfg ActionConfig) (ActionResult
 		return output, err
 	case "control":
 		var result Result
-		if cfg.EventName == "workflow_run" {
-			if err := session.worker(ctx, true); err != nil {
+		if cfg.IsCompletionEvent() {
+			if err := session.completion(ctx); err != nil {
 				return output, err
 			}
 			if session.activeWorker() {
@@ -481,10 +487,13 @@ func RunAction(ctx context.Context, mode string, cfg ActionConfig) (ActionResult
 		if err == nil && result.State != nil && result.Disposition != "recovery-required" {
 			err = SyncStopLabels(ctx, cfg.Client, session.issue.Number, result.State)
 		}
-		if cfg.EventName == "workflow_run" && err == nil && result.State != nil && result.State.Phase == "awaiting-publication" && result.State.PilotCandidate != nil {
+		if cfg.IsCompletionEvent() && err == nil && result.State != nil && result.State.Phase == "awaiting-publication" && result.State.PilotCandidate != nil {
 			candidate := result.State.PilotCandidate
 			if candidate.Run.RunID == session.run.ID && candidate.Run.RunAttempt == session.run.RunAttempt {
 				output.Outputs["pilot_candidate"] = "true"
+				if cfg.EventName == "workflow_run" || session.completionNotifier() {
+					output.Outputs["automatic_publish"] = "true"
+				}
 				output.Outputs["candidate_run"] = strconv.FormatInt(candidate.Run.RunID, 10)
 				output.Outputs["candidate_attempt"] = strconv.Itoa(candidate.Run.RunAttempt)
 			}

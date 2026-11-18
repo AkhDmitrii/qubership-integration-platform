@@ -26,6 +26,7 @@ type testAPI struct {
 	FailDispatchResponse bool
 	DispatchWithoutID    bool
 	DispatchReadMisses   int
+	CompletionReadMisses int
 	CancellationPending  bool
 	CurrentSHA           string
 	Labels               map[string]bool
@@ -165,7 +166,12 @@ func (a *testAPI) serve(w http.ResponseWriter, r *http.Request) {
 				http.NotFound(w, r)
 				return
 			}
-			write(a.Runs[i])
+			run := a.Runs[i]
+			if r.Method == "GET" && run.Status == "completed" && a.CompletionReadMisses > 0 {
+				a.CompletionReadMisses--
+				run.Status, run.Conclusion = "in_progress", ""
+			}
+			write(run)
 			return
 		}
 		http.NotFound(w, r)

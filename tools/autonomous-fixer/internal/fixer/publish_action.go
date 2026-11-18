@@ -79,7 +79,7 @@ func (s *actionSession) ensureNoPendingStop(ctx context.Context, run WorkflowRun
 }
 
 func (s *actionSession) publishAction(ctx context.Context, operation string, output ActionResult) (ActionResult, error) {
-	automatic := s.cfg.EventName == "workflow_run"
+	automatic := s.cfg.EventName == "workflow_run" || s.completionNotifier()
 	if (!automatic && s.cfg.EventName != "workflow_dispatch") || s.state == nil || s.state.PilotCandidate == nil {
 		return output, fmt.Errorf("select an issue with an authorized pilot candidate")
 	}
@@ -91,7 +91,7 @@ func (s *actionSession) publishAction(ctx context.Context, operation string, out
 		return output, fmt.Errorf("the selected run and attempt differ from the recorded pilot candidate")
 	}
 	if automatic {
-		if err := s.worker(ctx, true); err != nil {
+		if err := s.completion(ctx); err != nil {
 			return output, err
 		}
 		if s.run.ID != candidate.Run.RunID || s.run.RunAttempt != candidate.Run.RunAttempt || s.execution.ID != candidate.ExecutionID || s.run.Conclusion != "success" {

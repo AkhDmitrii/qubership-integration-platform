@@ -132,18 +132,21 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	cfg := fixer.ActionConfig{Client: client, Variables: variables, Repository: repository, EventName: os.Getenv("GITHUB_EVENT_NAME"), Actor: actor, TriggeringActor: triggeringActor, Ref: os.Getenv("GITHUB_REF"), Enabled: true, Mode: mode, ScopePaths: fixer.ParseScopes(os.Getenv("AGENT_SCOPE_PATHS")), Payload: payload, Inputs: make(map[string]string)}
-	for _, key := range []string{"issue", "execution", "generation", "contract_version", "trusted_sha", "mode", "candidate_run", "candidate_attempt"} {
+	for _, key := range []string{"issue", "execution", "generation", "contract_version", "trusted_sha", "mode", "candidate_run", "candidate_attempt", "operation", "worker_run", "worker_attempt"} {
 		cfg.Inputs[key] = os.Getenv("INPUT_" + strings.ToUpper(key))
+		if cfg.Inputs[key] == "" {
+			cfg.Inputs[key] = payload.Inputs[key]
+		}
 	}
 	cfg.RunID, _ = strconv.ParseInt(os.Getenv("GITHUB_RUN_ID"), 10, 64)
 	cfg.RunAttempt, _ = strconv.Atoi(os.Getenv("GITHUB_RUN_ATTEMPT"))
-	if args[0] == "control" && cfg.EventName == "workflow_run" && checkpointPath != "" {
+	if args[0] == "control" && cfg.IsCompletionEvent() && checkpointPath != "" {
 		cfg.Checkpoint, err = readCheckpoint(checkpointPath)
 		if err != nil {
 			return err
 		}
 	}
-	if artifactDir != "" && ((args[0] == "control" && cfg.EventName == "workflow_run") || (args[0] == "publish" && mode == "pilot")) {
+	if artifactDir != "" && ((args[0] == "control" && cfg.IsCompletionEvent()) || (args[0] == "publish" && mode == "pilot")) {
 		pilot, err := fixer.LoadPilotResult(artifactDir)
 		if err == nil {
 			cfg.PilotResult = &pilot

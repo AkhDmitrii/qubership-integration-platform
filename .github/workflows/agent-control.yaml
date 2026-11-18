@@ -13,13 +13,21 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Check the controller without models or process an issue
+        description: Check the controller, reconcile state, or observe a worker run
         required: true
         type: choice
         default: check
-        options: [check, control]
+        options: [check, control, reconcile-run]
       issue:
-        description: Issue number for the control operation
+        description: Issue number for control or reconciliation
+        required: false
+        type: string
+      worker_run:
+        description: Worker run ID for reconcile-run
+        required: false
+        type: string
+      worker_attempt:
+        description: Worker run attempt for reconcile-run
         required: false
         type: string
   pull_request:
@@ -86,6 +94,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       pilot_candidate: ${{ steps.control.outputs.pilot_candidate }}
+      automatic_publish: ${{ steps.control.outputs.automatic_publish }}
       issue: ${{ steps.control.outputs.issue }}
       candidate_run: ${{ steps.control.outputs.candidate_run }}
       candidate_attempt: ${{ steps.control.outputs.candidate_attempt }}
@@ -101,6 +110,9 @@ jobs:
       AGENT_ENABLED: ${{ vars.AGENT_ENABLED }}
       AGENT_SCOPE_PATHS: ${{ vars.AGENT_SCOPE_PATHS }}
       AGENT_MODE: ${{ vars.AGENT_MODE || 'fake' }}
+      INPUT_OPERATION: ${{ inputs.operation }}
+      INPUT_WORKER_RUN: ${{ inputs.worker_run }}
+      INPUT_WORKER_ATTEMPT: ${{ inputs.worker_attempt }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
@@ -140,8 +152,7 @@ jobs:
   publish-pilot:
     needs: control
     if: >-
-      ${{ github.event_name == 'workflow_run' && vars.AGENT_AUTO_PUBLISH == 'true' &&
-          needs.control.outputs.pilot_candidate == 'true' }}
+      ${{ vars.AGENT_AUTO_PUBLISH == 'true' && needs.control.outputs.automatic_publish == 'true' }}
     permissions:
       contents: read
       actions: read

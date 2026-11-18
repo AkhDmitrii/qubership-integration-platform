@@ -263,3 +263,23 @@ jobs:
           name: agent-pilot-metrics-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/qip-pilot-metrics.json
           if-no-files-found: ignore
+
+  notify:
+    needs: [admit, work]
+    if: >-
+      ${{ always() && needs.admit.outputs.admitted == 'true' && vars.AGENT_ENABLED == 'true' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Notify the controller
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ISSUE: ${{ inputs.issue }}
+        run: |
+          [[ "$ISSUE" =~ ^[1-9][0-9]*$ ]]
+          gh workflow run agent-control.yaml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" \
+            -f operation=reconcile-run -f issue="$ISSUE" -f worker_run="$GITHUB_RUN_ID" -f worker_attempt="$GITHUB_RUN_ATTEMPT"
