@@ -15,10 +15,15 @@ import { UserMenu } from "../../src/components/UserMenu";
 import { configure } from "../../src/appConfig";
 import { ThemeContext } from "../../src/theme/context";
 
+let capturedConfirmTitle: string | undefined;
 let capturedConfirmOnOk: (() => void | Promise<void>) | undefined;
 
 jest.mock("../../src/misc/confirm-utils.ts", () => ({
-  confirmAndRun: (opts: { onOk: () => void | Promise<void> }) => {
+  confirmAndRun: (opts: {
+    title: string;
+    onOk: () => void | Promise<void>;
+  }) => {
+    capturedConfirmTitle = opts.title;
     capturedConfirmOnOk = opts.onOk;
   },
 }));
@@ -51,6 +56,7 @@ describe("UserMenu", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     resetUserConfig();
+    capturedConfirmTitle = undefined;
     capturedConfirmOnOk = undefined;
     mockOnThemeChange.mockClear();
     localStorage.clear();
@@ -134,7 +140,7 @@ describe("UserMenu", () => {
     const { container } = render(<UserMenu />);
     fireEvent.click(container.querySelector('button[aria-label="User menu"]')!);
 
-    await screen.findByText("Reset UI preferences");
+    await screen.findByText("Reset interface preferences");
     expect(screen.queryByText("Log out")).toBeNull();
   });
 
@@ -151,15 +157,16 @@ describe("UserMenu", () => {
     expect(onLogout).toHaveBeenCalledTimes(1);
   });
 
-  it("opens a confirmation when Reset UI preferences is clicked", async () => {
+  it("opens a confirmation when Reset interface preferences is clicked", async () => {
     configure({ userInfo: { userName: "Alice" } });
 
     const { container } = render(<UserMenu />);
     fireEvent.click(container.querySelector('button[aria-label="User menu"]')!);
 
-    const reset = await screen.findByText("Reset UI preferences");
+    const reset = await screen.findByText("Reset interface preferences");
     fireEvent.click(reset);
 
+    expect(capturedConfirmTitle).toBe("Reset interface preferences?");
     expect(capturedConfirmOnOk).toBeDefined();
   });
 
@@ -178,7 +185,7 @@ describe("UserMenu", () => {
     const { container } = render(<UserMenu />);
     fireEvent.click(container.querySelector('button[aria-label="User menu"]')!);
 
-    const reset = await screen.findByText("Reset UI preferences");
+    const reset = await screen.findByText("Reset interface preferences");
     fireEvent.click(reset);
 
     await act(async () => {
@@ -201,7 +208,7 @@ describe("UserMenu", () => {
     const { container } = render(<UserMenu />);
     fireEvent.click(container.querySelector('button[aria-label="User menu"]')!);
 
-    const reset = await screen.findByText("Reset UI preferences");
+    const reset = await screen.findByText("Reset interface preferences");
     fireEvent.click(reset);
 
     expect(localStorage.getItem("keep-me")).toBe("1");
@@ -229,19 +236,19 @@ describe("UserMenu", () => {
     const { container } = render(<UserMenu />);
     fireEvent.click(container.querySelector('button[aria-label="User menu"]')!);
 
-    await screen.findByText("Reset UI preferences");
+    await screen.findByText("Reset interface preferences");
     expect(screen.queryByText("Theme")).toBeNull();
     expect(screen.queryByText("System")).toBeNull();
   });
 
-  it("shows the theme switcher above Reset UI preferences when ThemeContext is provided", async () => {
+  it("shows the theme switcher above Reset interface preferences when ThemeContext is provided", async () => {
     configure({ userInfo: { userName: "Alice" } });
 
     const { container } = renderWithTheme();
     fireEvent.click(container.querySelector('button[aria-label="User menu"]')!);
 
     const themeLabel = await screen.findByText("Theme");
-    const reset = screen.getByText("Reset UI preferences");
+    const reset = screen.getByText("Reset interface preferences");
     expect(
       themeLabel.compareDocumentPosition(reset) &
         Node.DOCUMENT_POSITION_FOLLOWING,

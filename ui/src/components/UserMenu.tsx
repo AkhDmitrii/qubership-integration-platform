@@ -8,6 +8,7 @@ import { ThemeContext } from "../theme/context.tsx";
 import { ThemeSwitcher } from "./ThemeSwitcher.tsx";
 
 const { Text } = Typography;
+const RESET_PREFERENCES_LABEL = "Reset interface preferences";
 
 type UserMenuState = {
   userInfo: UserInfo;
@@ -51,9 +52,9 @@ export const UserMenu: React.FC = () => {
   const handleResetPreferences = () => {
     setOpen(false);
     confirmAndRun({
-      title: "Reset UI preferences?",
+      title: `${RESET_PREFERENCES_LABEL}?`,
       content:
-        "This will clear all locally stored UI preferences for this host and reload the page.",
+        "This clears all locally stored interface preferences for this host and reload the page.",
       onOk: () => {
         localStorage.clear();
         window.location.reload();
@@ -133,7 +134,7 @@ export const UserMenu: React.FC = () => {
           icon={<OverridableIcon name="resetPreferences" />}
           onClick={handleResetPreferences}
         >
-          Reset UI preferences
+          {RESET_PREFERENCES_LABEL}
         </Button>
         {onLogout && (
           <Button
