@@ -15,6 +15,7 @@ import (
 )
 
 type publicationAPI struct {
+	markDoneOnClose                                  bool
 	changeHeadDuringFiles                            bool
 	headComparison                                   string
 	prFiles                                          []map[string]string
@@ -84,6 +85,9 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 	case path == "/issues/1" && r.Method == "PATCH":
 		a.state = "closed"
 		a.closeCalls++
+		if a.markDoneOnClose {
+			a.project = "DONE"
+		}
 		write(map[string]string{"state": "closed"})
 	case path == "/issues/1/comments" && r.Method == "GET":
 		if a.comments == nil {
@@ -237,6 +241,23 @@ func TestPublishOpenIssueClosesAfterComment(t *testing.T) {
 	a.state = "open"
 	if _, e = Publish(context.Background(), c, plan, run, PublishOptions{Actor: "alice", Apply: true}); e == nil || a.closeCalls != 1 {
 		t.Fatal("reopened issue was closed again", e)
+	}
+}
+func TestProjectAutomationCompletesAfterIssueClose(t *testing.T) {
+	plan, run, _ := publicationFixture(t, false)
+	plan.IssueState = "open"
+	plan.ID = ""
+	plan.ID = Digest(plan)
+	c, a := apiFixture(t, plan)
+	a.state, a.markDoneOnClose = "open", true
+	for i := 0; i < 2; i++ {
+		result, err := Publish(context.Background(), c, plan, run, PublishOptions{Actor: "alice", Apply: true})
+		if err != nil || result.Status != "completed" || !result.CloseAttempted || result.ProjectDoneAttempted {
+			t.Fatalf("publication %d: %+v, %v", i, result, err)
+		}
+	}
+	if a.closeCalls != 1 || a.doneCalls != 0 || a.commentCreates != 1 {
+		t.Fatalf("close=%d project updates=%d comments=%d", a.closeCalls, a.doneCalls, a.commentCreates)
 	}
 }
 func TestPublicationStopsForStaleMovedOrUnauthorizedTask(t *testing.T) {

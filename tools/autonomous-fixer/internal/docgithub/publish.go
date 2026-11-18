@@ -291,7 +291,7 @@ func Publish(ctx context.Context, c *Client, plan Plan, runDir string, options P
 		if found && p.state.Status == "completed" && current.IssueState == "closed" {
 			return p.state, nil
 		}
-		if !found || !p.state.ProjectDoneAttempted {
+		if !found || !p.state.ProjectDoneAttempted && !(p.state.CloseAttempted && current.IssueState == "closed") {
 			return p.state, fmt.Errorf("project already left documentation review without this completion")
 		}
 	}

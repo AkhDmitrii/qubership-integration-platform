@@ -84,7 +84,7 @@ func (p *publisher) complete(ctx context.Context, mergeSHA string) error {
 		if current.ProjectStatus != p.plan.Project.DoneOptionID {
 			return fmt.Errorf("project completion result is unresolved: %v", requestErr)
 		}
-	} else if !p.state.ProjectDoneAttempted && p.state.Status != "completed" {
+	} else if !p.state.ProjectDoneAttempted && !p.state.CloseAttempted && p.state.Status != "completed" {
 		return fmt.Errorf("project completion was not requested by this task")
 	}
 	if p.state.Status == "completed" {
