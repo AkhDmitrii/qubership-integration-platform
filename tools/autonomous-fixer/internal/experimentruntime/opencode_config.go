@@ -83,6 +83,26 @@ func HostedOpenCodeConfig(author, reviewer Profile, workspace, relayURL string) 
 		rule("shell", "git commit *", "deny"),
 	}
 	config["experimental"] = map[string]int{"subagent_depth": 1}
+	return openCodeRelayConfig(config, relayURL)
+}
+
+func HostedDocumentationOpenCodeConfig(profile Profile, workspace, relayURL string) (string, error) {
+	if err := ValidateHostedOpenCodeProfile(profile); err != nil {
+		return "", err
+	}
+	config, err := openCodeConfig(profile, workspace)
+	if err != nil {
+		return "", err
+	}
+	config["permissions"] = append(config["permissions"].([]map[string]string),
+		map[string]string{"action": "shell", "resource": "gh *", "effect": "deny"},
+		map[string]string{"action": "shell", "resource": "git push *", "effect": "deny"},
+		map[string]string{"action": "shell", "resource": "git commit *", "effect": "deny"},
+	)
+	return openCodeRelayConfig(config, relayURL)
+}
+
+func openCodeRelayConfig(config map[string]any, relayURL string) (string, error) {
 	config["providers"] = map[string]any{
 		"openrouter": map[string]any{
 			"settings": map[string]string{"baseURL": relayURL, "apiKey": OpenRouterRelayKey},

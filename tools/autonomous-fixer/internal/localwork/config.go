@@ -114,24 +114,25 @@ func Prepare(ctx context.Context, cfg Config) (*Driver, error) {
 		return nil, fmt.Errorf("%s workflow applies to engineering tasks", cfg.Workflow)
 	}
 	managedRecipes := cfg.StaticChecks
-	if cfg.Hosted && cfg.Workflow != "fix-issue" {
+	if cfg.Hosted && cfg.TaskKind != "documentation" && cfg.Workflow != "fix-issue" {
 		return nil, fmt.Errorf("hosted execution requires the fix-issue workflow")
 	}
+	if cfg.Hosted {
+		if err := experimentruntime.ValidateHostedOpenCodeProfile(cfg.Profile); err != nil {
+			return nil, err
+		}
+		if cfg.ReviewProfile == nil {
+			return nil, fmt.Errorf("hosted execution requires a review_profile")
+		}
+		if err := experimentruntime.ValidateHostedOpenCodeProfile(*cfg.ReviewProfile); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) == "" {
+			return nil, fmt.Errorf("hosted execution requires OPENROUTER_API_KEY in the controller environment")
+		}
+	}
 	if cfg.Workflow == "fix-issue" {
-		if cfg.Hosted {
-			if err := experimentruntime.ValidateHostedOpenCodeProfile(cfg.Profile); err != nil {
-				return nil, err
-			}
-			if cfg.ReviewProfile == nil {
-				return nil, fmt.Errorf("hosted execution requires a review_profile")
-			}
-			if err := experimentruntime.ValidateHostedOpenCodeProfile(*cfg.ReviewProfile); err != nil {
-				return nil, err
-			}
-			if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) == "" {
-				return nil, fmt.Errorf("hosted execution requires OPENROUTER_API_KEY in the controller environment")
-			}
-		} else if cfg.Profile.Runtime != "codex" {
+		if !cfg.Hosted && cfg.Profile.Runtime != "codex" {
 			return nil, fmt.Errorf("fix-issue workflow requires Codex")
 		}
 		cfg.AuthorHelperProfile = nil

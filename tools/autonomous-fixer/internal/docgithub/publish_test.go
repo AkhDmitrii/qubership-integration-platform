@@ -15,6 +15,7 @@ import (
 )
 
 type publicationAPI struct {
+	markDoneOnClose                                  bool
 	changeHeadDuringFiles                            bool
 	headComparison                                   string
 	prFiles                                          []map[string]string
@@ -62,7 +63,7 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 			a.doneCalls++
 			write(map[string]any{"data": map[string]any{"updateProjectV2ItemFieldValue": map[string]any{"projectV2Item": map[string]string{"id": "ITEM"}}}})
 		case strings.Contains(request.Query, "projectV2(number"):
-			write(map[string]any{"data": map[string]any{"organization": map[string]any{"projectV2": map[string]any{"id": "PROJECT", "fields": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"id": "FIELD", "name": "Status", "options": []any{map[string]string{"id": "REVIEW", "name": "In doc review"}, map[string]string{"id": "DONE", "name": "Done"}}}}}}}, "node": map[string]any{"projectItems": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"id": "ITEM", "project": map[string]string{"id": "PROJECT"}, "fieldValueByName": map[string]any{"optionId": a.project, "field": map[string]string{"id": "FIELD"}}}}}}}})
+			write(map[string]any{"data": map[string]any{"repository": map[string]any{"owner": map[string]any{"projectV2": map[string]any{"id": "PROJECT", "fields": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"id": "FIELD", "name": "Status", "options": []any{map[string]string{"id": "REVIEW", "name": "In doc review"}, map[string]string{"id": "DONE", "name": "Done"}}}}}}}}, "node": map[string]any{"projectItems": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"id": "ITEM", "project": map[string]string{"id": "PROJECT"}, "fieldValueByName": map[string]any{"optionId": a.project, "field": map[string]string{"id": "FIELD"}}}}}}}})
 		case strings.Contains(request.Query, "timelineItems"):
 			pr := map[string]any{"number": 2, "merged": true, "baseRefName": "main", "repository": map[string]string{"nameWithOwner": "org/repo"}, "mergeCommit": map[string]string{"oid": a.plan.BaseSHA}, "closingIssuesReferences": map[string]any{"nodes": []any{map[string]int{"number": 1}}, "pageInfo": map[string]bool{"hasNextPage": false}}}
 			write(map[string]any{"data": map[string]any{"repository": map[string]any{"issue": map[string]any{"timelineItems": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"closer": pr}}}}}}})
@@ -84,6 +85,9 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 	case path == "/issues/1" && r.Method == "PATCH":
 		a.state = "closed"
 		a.closeCalls++
+		if a.markDoneOnClose {
+			a.project = "DONE"
+		}
 		write(map[string]string{"state": "closed"})
 	case path == "/issues/1/comments" && r.Method == "GET":
 		if a.comments == nil {
@@ -237,6 +241,23 @@ func TestPublishOpenIssueClosesAfterComment(t *testing.T) {
 	a.state = "open"
 	if _, e = Publish(context.Background(), c, plan, run, PublishOptions{Actor: "alice", Apply: true}); e == nil || a.closeCalls != 1 {
 		t.Fatal("reopened issue was closed again", e)
+	}
+}
+func TestProjectAutomationCompletesAfterIssueClose(t *testing.T) {
+	plan, run, _ := publicationFixture(t, false)
+	plan.IssueState = "open"
+	plan.ID = ""
+	plan.ID = Digest(plan)
+	c, a := apiFixture(t, plan)
+	a.state, a.markDoneOnClose = "open", true
+	for i := 0; i < 2; i++ {
+		result, err := Publish(context.Background(), c, plan, run, PublishOptions{Actor: "alice", Apply: true})
+		if err != nil || result.Status != "completed" || !result.CloseAttempted || result.ProjectDoneAttempted {
+			t.Fatalf("publication %d: %+v, %v", i, result, err)
+		}
+	}
+	if a.closeCalls != 1 || a.doneCalls != 0 || a.commentCreates != 1 {
+		t.Fatalf("close=%d project updates=%d comments=%d", a.closeCalls, a.doneCalls, a.commentCreates)
 	}
 }
 func TestPublicationStopsForStaleMovedOrUnauthorizedTask(t *testing.T) {

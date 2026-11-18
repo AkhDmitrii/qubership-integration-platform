@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,8 +14,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentsignature"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/checkrunner"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/experimentruntime"
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/openrouterusage"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/tasktriage"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcontext"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcycle"
@@ -43,6 +46,7 @@ type Driver struct {
 	priorEvidence        string
 	resume               *workcycle.Report
 	triageProofHash      string
+	providerUsage        *openrouterusage.Recorder
 }
 
 func (d *Driver) Run(ctx context.Context, inv workcycle.Invocation) (response workcycle.Response, err error) {
@@ -127,7 +131,35 @@ func (d *Driver) Run(ctx context.Context, inv workcycle.Invocation) (response wo
 		}
 		defer os.Remove(filepath.Join(home, ".codex", "auth.json"))
 	}
+	var stopRelay func()
+	if d.Config.Hosted && inv.Request.Kind == "documentation" {
+		if d.providerUsage == nil {
+			d.providerUsage = &openrouterusage.Recorder{}
+		}
+		relayURL, stop, relayErr := startOpenRouterRelay(strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")), d.providerUsage, runtimeConfig.Profile)
+		if relayErr != nil {
+			return response, relayErr
+		}
+		stopRelay = stop
+		config, configErr := experimentruntime.HostedDocumentationOpenCodeConfig(runtimeConfig.Profile, d.Config.Workspace, relayURL)
+		if configErr != nil {
+			stopRelay()
+			return response, configErr
+		}
+		env = append(env, "OPENCODE_CONFIG_CONTENT="+config)
+	}
 	process, runErr := experimentruntime.RunWithProgress(ctx, command, dir, env, nil, nil, experimentruntime.ProgressOptions{Runtime: runtimeConfig.Profile.Runtime, Stage: string(inv.Stage), LatestPath: filepath.Join(d.Config.OutputDirectory, "runtime-progress.json")})
+	if stopRelay != nil {
+		stopRelay()
+		observed, _ := agentsignature.ReadIdentity(dir, runtimeConfig.Profile.Runtime)
+		err = errors.Join(
+			writeJSON(filepath.Join(d.Config.OutputDirectory, openrouterusage.Filename), d.providerUsage.Report()),
+			writeJSON(filepath.Join(dir, agentsignature.IdentityFilename), observed),
+		)
+		if err != nil {
+			return response, errors.Join(runErr, err)
+		}
+	}
 	if err = writeJSON(filepath.Join(dir, "process.json"), process); err != nil {
 		return response, err
 	}

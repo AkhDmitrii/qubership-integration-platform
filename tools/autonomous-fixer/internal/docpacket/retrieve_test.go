@@ -101,13 +101,14 @@ func TestAutomaticRetrievalAtDocsRevision(t *testing.T) {
 
 func TestRetrievalMappingsAndBuildOnly(t *testing.T) {
 	paths := []string{
+		"ui/src/components/UserMenu.tsx",
 		"ui/src/pages/ChainGraphView.tsx",
 		"ui/src/components/admin_tools/design-templates/DesignTemplates.tsx",
 		"ui/src/components/services/context/ContextServiceList.tsx",
 		"ui/src/components/services/mcp/McpServiceList.tsx",
 		"schemas/src/main/resources/conf-model/element/service-call.schema.yaml",
 	}
-	want := []string{"1__Graph/readme.md", "7__Design_Templates/readme.md", "4__Context/readme.md", "5__MCP/readme.md", "6__Service_Call/readme.md"}
+	want := []string{"2__General_Functions/readme.md", "1__Graph/readme.md", "7__Design_Templates/readme.md", "4__Context/readme.md", "5__MCP/readme.md", "6__Service_Call/readme.md"}
 	got := autoDocumentationCandidates(paths)
 	if len(got) != len(want) {
 		t.Fatalf("mappings: %+v", got)
