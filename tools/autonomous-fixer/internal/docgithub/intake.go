@@ -42,18 +42,20 @@ func (c *Client) head(ctx context.Context, branch string) (string, error) {
 }
 func (c *Client) project(ctx context.Context, node, projectID string, number int) (Project, string, error) {
 	var result struct {
-		Organization struct {
-			Project struct {
-				ID     string `json:"id"`
-				Fields struct {
-					Nodes []struct {
-						ID, Name string
-						Options  []struct{ ID, Name string }
-					}
-					PageInfo struct{ HasNextPage bool }
-				} `json:"fields"`
-			} `json:"projectV2"`
-		} `json:"organization"`
+		Repository struct {
+			Owner struct {
+				Project struct {
+					ID     string `json:"id"`
+					Fields struct {
+						Nodes []struct {
+							ID, Name string
+							Options  []struct{ ID, Name string }
+						}
+						PageInfo struct{ HasNextPage bool }
+					} `json:"fields"`
+				} `json:"projectV2"`
+			} `json:"owner"`
+		} `json:"repository"`
 		Node struct {
 			ProjectItems struct {
 				Nodes []struct {
@@ -68,15 +70,16 @@ func (c *Client) project(ctx context.Context, node, projectID string, number int
 			} `json:"projectItems"`
 		} `json:"node"`
 	}
-	query := `query($owner:String!,$number:Int!,$node:ID!){organization(login:$owner){projectV2(number:$number){id fields(first:100){pageInfo{hasNextPage} nodes{... on ProjectV2SingleSelectField{id name options{id name}}}}}} node(id:$node){... on Issue{projectItems(first:100){pageInfo{hasNextPage} nodes{id project{id} fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{optionId field{... on ProjectV2SingleSelectField{id}}}}}}}}}`
-	if err := c.GraphQL(ctx, query, map[string]any{"owner": strings.Split(c.Repository, "/")[0], "number": number, "node": node}, &result); err != nil {
+	query := `query($owner:String!,$repo:String!,$number:Int!,$node:ID!){repository(owner:$owner,name:$repo){owner{... on ProjectV2Owner{projectV2(number:$number){id fields(first:100){pageInfo{hasNextPage} nodes{... on ProjectV2SingleSelectField{id name options{id name}}}}}}}} node(id:$node){... on Issue{projectItems(first:100){pageInfo{hasNextPage} nodes{id project{id} fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{optionId field{... on ProjectV2SingleSelectField{id}}}}}}}}}`
+	owner, repo, _ := strings.Cut(c.Repository, "/")
+	if err := c.GraphQL(ctx, query, map[string]any{"owner": owner, "repo": repo, "number": number, "node": node}, &result); err != nil {
 		return Project{}, "", err
 	}
-	p := Project{ID: result.Organization.Project.ID, ReviewStatus: "In doc review", DoneStatus: "Done"}
-	if p.ID == "" || projectID != "" && p.ID != projectID || result.Organization.Project.Fields.PageInfo.HasNextPage || result.Node.ProjectItems.PageInfo.HasNextPage {
+	p := Project{ID: result.Repository.Owner.Project.ID, ReviewStatus: "In doc review", DoneStatus: "Done"}
+	if p.ID == "" || projectID != "" && p.ID != projectID || result.Repository.Owner.Project.Fields.PageInfo.HasNextPage || result.Node.ProjectItems.PageInfo.HasNextPage {
 		return p, "", fmt.Errorf("project identity or membership retrieval is incomplete")
 	}
-	for _, f := range result.Organization.Project.Fields.Nodes {
+	for _, f := range result.Repository.Owner.Project.Fields.Nodes {
 		if f.Name == "Status" {
 			p.StatusFieldID = f.ID
 			for _, o := range f.Options {
