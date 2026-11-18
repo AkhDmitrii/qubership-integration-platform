@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/docpacket"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/doctriage"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/jev"
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcycle"
 )
 
 type fixtureTransport func(*http.Request) (*http.Response, error)
@@ -24,11 +26,22 @@ type fixtureTransport func(*http.Request) (*http.Response, error)
 func (f fixtureTransport) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
 
 func TestHostedDocumentationHandoffRestoresFreshCandidate(t *testing.T) {
-	t.Run("patch", func(t *testing.T) { checkHostedHandoff(t, true) })
-	t.Run("automatic-no-change", func(t *testing.T) { checkHostedHandoff(t, false) })
+	for _, tc := range []struct {
+		route string
+		patch bool
+	}{
+		{route: "docs-write", patch: true},
+		{route: "docs-assess", patch: true},
+		{route: "docs-assess", patch: false},
+		{route: "docs-no-change", patch: false},
+	} {
+		t.Run(fmt.Sprintf("%s-patch-%t", tc.route, tc.patch), func(t *testing.T) {
+			checkHostedHandoff(t, tc.route, tc.patch)
+		})
+	}
 }
 
-func checkHostedHandoff(t *testing.T, needed bool) {
+func checkHostedHandoff(t *testing.T, route string, patch bool) {
 	t.Helper()
 	ctx := context.Background()
 	root := t.TempDir()
@@ -75,7 +88,11 @@ func checkHostedHandoff(t *testing.T, needed bool) {
 	}
 	plan.PacketSHA256 = docgithub.Digest(packet)
 	plan.ID = docgithub.Digest(plan)
-	writeFixtureFile(t, filepath.Join(prepared, "task.md"), "Update the outdated instruction.\n", 0600)
+	task := "The existing instruction matches the implementation.\n"
+	if patch {
+		task = "Update the outdated instruction.\n"
+	}
+	writeFixtureFile(t, filepath.Join(prepared, "task.md"), task, 0600)
 	if err := save(filepath.Join(prepared, "plan.json"), plan); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +115,7 @@ func checkHostedHandoff(t *testing.T, needed bool) {
 		switch r.URL.Path {
 		case "/api/alpha/decisions":
 			choices := map[string]string{"documentation_action": "no_change", "documentation_reason": "outside_help_scope", "change_attribution": "unchanged"}
-			if needed {
+			if route != "docs-no-change" {
 				choices = map[string]string{"documentation_action": "needed", "documentation_reason": "stale_guidance", "change_attribution": "change_related"}
 			}
 			answers := make(map[string]jev.Answer)
@@ -108,6 +125,10 @@ func checkHostedHandoff(t *testing.T, needed bool) {
 					probabilities[option] = 0
 				}
 				probabilities[choices[name]] = 1
+				if route == "docs-assess" && name == "documentation_action" {
+					probabilities[choices[name]] = .68
+					probabilities["no_change"] = .32
+				}
 				answers[name] = jev.Answer{Type: "choice", Choice: choices[name], Probabilities: probabilities}
 			}
 			data, _ = json.Marshal(map[string]any{"id": "decision", "model": body.Model, "answers": answers, "usage": map[string]any{"output_tokens": 30, "cost": .004}})
@@ -123,14 +144,14 @@ func checkHostedHandoff(t *testing.T, needed bool) {
 	writeFixtureFile(t, runtime, hostedRuntimeFixture, 0700)
 	if err := run(ctx, []string{
 		"work", "--hosted", "--prepared", prepared, "--source", source, "--workspace", workspace, "--output", output,
-		"--runtime", runtime, "--runtime-version", "opencode v2.2.6", "--model", "openrouter/openai/author", "--effort", "high",
-		"--review-model", "openrouter/openai/reviewer", "--review-effort", "medium", "--handoff", handoff,
+		"--runtime", runtime, "--runtime-version", "opencode v2.2.6", "--model", "openrouter/openai/gpt-6-luna", "--effort", "medium",
+		"--handoff", handoff,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	models := []string{jev.DefaultModel}
-	if needed {
-		models = append(models, "openai/author", "openai/reviewer", "openai/author")
+	if route != "docs-no-change" {
+		models = append(models, "openai/gpt-6-luna")
 	}
 	for _, want := range models {
 		select {
@@ -146,11 +167,16 @@ func checkHostedHandoff(t *testing.T, needed bool) {
 		t.Fatalf("unexpected extra model requests: %d", len(requests))
 	}
 	expected := []string{"feedback.json"}
-	excluded := []string{"work/step-0001-docs-write/home", "work/step-0001-docs-write/stdout.jsonl", "work/evidence/step-0001-docs-write/unlisted"}
-	if needed {
-		expected = append(expected, "work/candidate-files/help/docs/readme.md", "work/provider-usage.json", "work/step-0002-docs-review/observed-agent.json")
+	excluded := []string{"work/step-0001-docs-author/home", "work/step-0001-docs-author/stdout.jsonl", "work/evidence/step-0001-docs-author/unlisted", "work/step-0002-docs-review"}
+	if route != "docs-no-change" {
+		expected = append(expected, "work/provider-usage.json", "work/step-0001-docs-author/observed-agent.json")
 	} else {
-		excluded = append(excluded, "work/candidate-files", "work/provider-usage.json")
+		excluded = append(excluded, "work/provider-usage.json", "work/step-0001-docs-author")
+	}
+	if patch {
+		expected = append(expected, "work/candidate-files/help/docs/readme.md")
+	} else {
+		excluded = append(excluded, "work/candidate-files")
 	}
 	for _, name := range expected {
 		if _, err := os.Stat(filepath.Join(handoff, name)); err != nil {
@@ -172,8 +198,11 @@ func checkHostedHandoff(t *testing.T, needed bool) {
 	}
 	patched, err := os.ReadFile(filepath.Join(publisherWorkspace, "help/docs/readme.md"))
 	wantPage, wantSignature := "# Help\n\nOld instruction.\n", "<sub>🤖 typesafe/jev-1.14 out=30 usd=0.004</sub>"
-	if needed {
-		wantPage, wantSignature = "# Help\n\nUpdated instruction.\n", "<sub>🤖 openai/author high out=60 usd=0.007</sub>"
+	if route != "docs-no-change" {
+		wantSignature = "<sub>🤖 openai/gpt-6-luna medium out=40 usd=0.005</sub>"
+	}
+	if patch {
+		wantPage = "# Help\n\nUpdated instruction.\n"
 	}
 	if err != nil || string(patched) != wantPage {
 		t.Fatal(string(patched), err)
@@ -181,6 +210,16 @@ func checkHostedHandoff(t *testing.T, needed bool) {
 	signature, err := agentsignature.ReadRun(publishedRun)
 	if err != nil || signature.Line() != wantSignature {
 		t.Fatal(signature.Line(), err)
+	}
+	var report workcycle.Report
+	if err := read(filepath.Join(publishedRun, "report.json"), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Request.DocumentationEntry.Route != route || report.Workflow != "docs-author" || len(report.Observations) != len(models)-1 {
+		t.Fatalf("unexpected author report: %s, %s, %d observations", report.Request.DocumentationEntry.Route, report.Workflow, len(report.Observations))
+	}
+	if route == "docs-write" {
+		rejectInvalidAuthorProof(t, plan, publishedRun, publisherWorkspace)
 	}
 	leaked := filepath.Join(output, "task/task.md")
 	writeFixtureFile(t, leaked, "fixture-openrouter-key", 0600)
@@ -190,6 +229,56 @@ func checkHostedHandoff(t *testing.T, needed bool) {
 	}
 	if _, err := os.Lstat(rejected); !os.IsNotExist(err) {
 		t.Fatal("rejected handoff left transferable files", err)
+	}
+}
+
+func rejectInvalidAuthorProof(t *testing.T, plan docgithub.Plan, runDir, workspace string) {
+	t.Helper()
+	reportPath := filepath.Join(runDir, "report.json")
+	receiptPath := filepath.Join(runDir, "receipt.json")
+	original, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt map[string]any
+	if err := read(receiptPath, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		damage func(*workcycle.Report)
+	}{
+		{"missing required check", func(r *workcycle.Report) {
+			r.Observations[0].Declaration.Checks = r.Observations[0].Declaration.Checks[1:]
+		}},
+		{"independent approval", func(r *workcycle.Report) {
+			r.Observations = append(r.Observations, workcycle.Observation{Stage: "docs-review"})
+		}},
+		{"routing evidence reused for a check", func(r *workcycle.Report) {
+			r.Observations[0].Declaration.Checks[0].Evidence = r.Request.DocumentationEntry.Evidence
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var report workcycle.Report
+			if err := json.Unmarshal(original, &report); err != nil {
+				t.Fatal(err)
+			}
+			tc.damage(&report)
+			if err := save(reportPath, report); err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(reportPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt["report_sha256"] = fmt.Sprintf("%x", sha256.Sum256(body))
+			if err := save(receiptPath, receipt); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := docgithub.ValidateCandidate(context.Background(), plan, runDir, workspace); err == nil {
+				t.Fatal("publication accepted an invalid author proof")
+			}
+		})
 	}
 }
 
@@ -217,6 +306,8 @@ model, variant = sys.argv[sys.argv.index('--model') + 1].split('#')
 prompt = Path(sys.argv[sys.argv.index('--file') + 1]).read_text()
 invocation = json.loads(prompt.split('Controller input:\n', 1)[1].split('\n\nSource base commit:', 1)[0])
 stage = invocation['stage']
+assert stage == 'docs-author'
+assert 'Complete the investigation, any needed edit, and your own final checks in this session.' in prompt
 config = json.loads(os.environ['OPENCODE_CONFIG_CONTENT'])
 assert config['experimental']['subagent_depth'] == 0
 assert {'action': 'subagent', 'resource': '*', 'effect': 'deny'} in config['permissions']
@@ -249,10 +340,12 @@ doc = {'decision': 'needed', 'reason': 'stale_guidance', 'summary': 'Update the 
                    'needs_change': True, 'source_evidence': refs, 'documentation_evidence': refs, 'action': 'Update the existing page.'}],
        'pr_title': 'docs: update the instruction', 'pr_body': 'Document the shipped behavior. Related #1'}
 response = {'evidence': refs}
-if stage == 'docs-write':
+if invocation['request']['task'].startswith('Update'):
     Path('help/docs/readme.md').write_text('# Help\n\nUpdated instruction.\n')
-    response['documentation'] = doc
-if stage == 'docs-verify':
     response['checks'] = [{'id': check['id'], 'outcome': 'pass', 'evidence': refs} for check in invocation['request']['required_checks']]
+else:
+    doc.update(decision='no_change', reason='already_covered', issue_comment='The existing instruction still matches the implementation.')
+    doc['claims'][0].update(attribution='unchanged', needs_change=False, action='Keep the existing instruction.')
+response['documentation'] = doc
 print(json.dumps({'type': 'text', 'sessionID': 'fixture', 'part': {'type': 'text', 'messageID': 'fixture', 'text': json.dumps(response)}}))
 `

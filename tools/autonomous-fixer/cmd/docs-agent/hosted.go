@@ -26,10 +26,8 @@ func validateHostedRuntime(ctx context.Context, cfg localwork.Config) error {
 	if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) == "" {
 		return fmt.Errorf("hosted work requires OPENROUTER_API_KEY")
 	}
-	for _, profile := range []experimentruntime.Profile{cfg.Profile, *cfg.ReviewProfile} {
-		if err := experimentruntime.ValidateHostedOpenCodeProfile(profile); err != nil {
-			return err
-		}
+	if err := experimentruntime.ValidateHostedOpenCodeProfile(cfg.Profile); err != nil {
+		return err
 	}
 	command := exec.CommandContext(ctx, cfg.RuntimeBinary, "--version")
 	command.Env = []string{"PATH=" + os.Getenv("PATH"), "LANG=C.UTF-8"}
@@ -110,7 +108,7 @@ func exportHandoff(ctx context.Context, plan docgithub.Plan, output, workspace, 
 	if err := read(filepath.Join(targetRun, "config.json"), &cfg); err != nil {
 		return err
 	}
-	if !cfg.Hosted || cfg.ResumeFrom != "" || cfg.OutputDirectory != runDir || cfg.TaskDirectory != filepath.Join(output, "task") {
+	if !cfg.Hosted || cfg.Workflow != string(doccycle.AuthorStage) || cfg.ResumeFrom != "" || cfg.OutputDirectory != runDir || cfg.TaskDirectory != filepath.Join(output, "task") {
 		return fmt.Errorf("handoff requires a fresh hosted documentation run")
 	}
 	var receipt struct {
@@ -144,20 +142,16 @@ func exportHandoff(ctx context.Context, plan docgithub.Plan, output, workspace, 
 			return err
 		}
 	}
-	for i, observation := range report.Observations {
-		switch observation.Stage {
-		case doccycle.AssessStage, doccycle.WriteStage, doccycle.ReviewStage, doccycle.VerifyStage:
-		default:
-			return fmt.Errorf("handoff report contains an unknown documentation stage")
+	if len(report.Observations) != 0 {
+		if len(report.Observations) != 1 || report.Observations[0].Stage != doccycle.AuthorStage {
+			return fmt.Errorf("handoff requires one documentation author observation")
 		}
-		dir := filepath.Join("work", fmt.Sprintf("step-%04d-%s", i+1, observation.Stage))
+		dir := filepath.Join("work", fmt.Sprintf("step-0001-%s", doccycle.AuthorStage))
 		for _, name := range []string{"profile.json", agentsignature.IdentityFilename} {
 			if err := copyFile(filepath.Join(dir, name), false); err != nil {
 				return err
 			}
 		}
-	}
-	if len(report.Observations) != 0 {
 		if err := copyFile(filepath.Join("work", openrouterusage.Filename), false); err != nil {
 			return err
 		}

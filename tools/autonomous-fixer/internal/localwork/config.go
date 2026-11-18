@@ -110,8 +110,20 @@ func Prepare(ctx context.Context, cfg Config) (*Driver, error) {
 		default:
 			return nil, fmt.Errorf("workflow must be fix-issue, agent, or staged")
 		}
-	} else if cfg.Workflow == "agent" || cfg.Workflow == "fix-issue" {
-		return nil, fmt.Errorf("%s workflow applies to engineering tasks", cfg.Workflow)
+	} else {
+		switch cfg.Workflow {
+		case "", "staged", string(doccycle.AuthorStage):
+		default:
+			return nil, fmt.Errorf("%s workflow applies to engineering tasks", cfg.Workflow)
+		}
+		if cfg.Hosted {
+			if cfg.Workflow == "staged" || cfg.ResumeFrom != "" || cfg.ReviewProfile != nil {
+				return nil, fmt.Errorf("hosted documentation runs one author session with a fresh candidate")
+			}
+			cfg.Workflow = string(doccycle.AuthorStage)
+		} else if cfg.Workflow == string(doccycle.AuthorStage) {
+			return nil, fmt.Errorf("docs-author workflow requires hosted execution")
+		}
 	}
 	managedRecipes := cfg.StaticChecks
 	if cfg.Hosted && cfg.TaskKind != "documentation" && cfg.Workflow != "fix-issue" {
@@ -121,11 +133,13 @@ func Prepare(ctx context.Context, cfg Config) (*Driver, error) {
 		if err := experimentruntime.ValidateHostedOpenCodeProfile(cfg.Profile); err != nil {
 			return nil, err
 		}
-		if cfg.ReviewProfile == nil {
-			return nil, fmt.Errorf("hosted execution requires a review_profile")
-		}
-		if err := experimentruntime.ValidateHostedOpenCodeProfile(*cfg.ReviewProfile); err != nil {
-			return nil, err
+		if cfg.TaskKind != "documentation" {
+			if cfg.ReviewProfile == nil {
+				return nil, fmt.Errorf("hosted engineering requires a review_profile")
+			}
+			if err := experimentruntime.ValidateHostedOpenCodeProfile(*cfg.ReviewProfile); err != nil {
+				return nil, err
+			}
 		}
 		if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) == "" {
 			return nil, fmt.Errorf("hosted execution requires OPENROUTER_API_KEY in the controller environment")
@@ -292,6 +306,9 @@ func Execute(ctx context.Context, cfg Config) (workcycle.Report, error) {
 		return workcycle.Report{}, err
 	}
 	if cfg.TaskKind == "documentation" {
+		if d.Config.Hosted {
+			return doccycle.RunAuthor(ctx, d.Request, d)
+		}
 		if d.resume != nil {
 			if cfg.ResumeMode == "assessment" {
 				return doccycle.ReplayNoChangeAssessment(ctx, d.Request, d, *d.resume)

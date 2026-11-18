@@ -5,7 +5,7 @@
 Select **Run workflow**, enter the issue number, and choose an operation.
 
 - Choose `prepare` to freeze the issue, source revision, and change packet for local model work. This operation reads GitHub only.
-- Choose `run` to prepare the packet, run the documentation stages, and validate a completed result. The publisher restores the exact candidate from the work artifact and checks it against the original preparation. With `apply` selected, it opens a draft documentation PR or records a no-change decision and completes the issue. If the work needs a decision, read the question in the run summary. Blocked verification fails the work job.
+- Choose `run` to prepare the packet, run the documentation work, and validate a completed result. The publisher restores the exact candidate from the work artifact and checks it against the original preparation. With `apply` selected, it opens a draft documentation PR or records a no-change decision and completes the issue. If the work needs a decision, read the question in the run summary. Blocked verification fails the work job.
 - Choose `reconcile` after the documentation PR merges. Reconciliation recovers the original plan from the publisher's GitHub state and validates the merged PR against it. Select `apply` to complete the issue and move the project item to **Done**.
 
 `apply` defaults to `false`. A new `run` dispatch starts a new plan and model run. To apply the exact result of a dry run, use the downloaded artifacts with the local publication command below.
@@ -22,10 +22,10 @@ Configure these settings in the repository's Actions variables and secrets.
 | `AGENT_DOCS_PROJECT_NUMBER` | The number of the project linked to the issue. Defaults to `12`. |
 | `AGENT_DOCS_PUBLISHER_LOGIN` | The account or App bot that publishes state comments and documentation PRs. The PR gate checks this login. |
 | `AGENT_ALLOWED_ACTORS` | Comma-separated GitHub logins allowed to run the workflow and publish. |
-| `AGENT_DOCS_MODEL`, `AGENT_DOCS_REVIEW_MODEL` | OpenRouter models for the author and reviewer. Both default to `openrouter/openai/gpt-6.1-terra`. |
-| `AGENT_DOCS_EFFORT`, `AGENT_DOCS_REVIEW_EFFORT` | Effort settings for the author and reviewer. Both default to `medium`. |
+| `AGENT_DOCS_MODEL` | OpenRouter model for the documentation author. Defaults to `openrouter/openai/gpt-6-luna`. |
+| `AGENT_DOCS_EFFORT` | Reasoning effort for the documentation author. Defaults to `medium`. |
 
-Set the `OPENROUTER_API_KEY` secret for `run`. The work job uses the key for Jev classification and for OpenCode 2.2.6 through a loopback relay. Assessment and writing use the author profile. Review and verification use the reviewer profile in separate sessions.
+Set the `OPENROUTER_API_KEY` secret for `run`. Jev classifies the prepared packet and can complete an automatic no-change decision. Routes that need an author start one OpenCode 2.2.6 session through a loopback relay. In that session, the author assesses the issue, edits help when needed, and runs the documentation checks.
 
 Choose one GitHub credential mode.
 

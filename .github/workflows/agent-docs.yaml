@@ -151,17 +151,14 @@ jobs:
         id: work
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          DOCS_MODEL: ${{ vars.AGENT_DOCS_MODEL || 'openrouter/openai/gpt-6.1-terra' }}
+          DOCS_MODEL: ${{ vars.AGENT_DOCS_MODEL || 'openrouter/openai/gpt-6-luna' }}
           DOCS_EFFORT: ${{ vars.AGENT_DOCS_EFFORT || 'medium' }}
-          DOCS_REVIEW_MODEL: ${{ vars.AGENT_DOCS_REVIEW_MODEL || 'openrouter/openai/gpt-6.1-terra' }}
-          DOCS_REVIEW_EFFORT: ${{ vars.AGENT_DOCS_REVIEW_EFFORT || 'medium' }}
         run: |
           "$RUNNER_TEMP/docs-agent" work --prepared "$RUNNER_TEMP/prepared" \
             --source "$GITHUB_WORKSPACE/source" --workspace "$RUNNER_TEMP/docs-candidate" \
             --output "$RUNNER_TEMP/docs-result" --handoff "$RUNNER_TEMP/docs-handoff" \
             --hosted --runtime "$RUNNER_TEMP/opencode" --runtime-version 'opencode v2.2.6' \
-            --model "$DOCS_MODEL" --effort "$DOCS_EFFORT" \
-            --review-model "$DOCS_REVIEW_MODEL" --review-effort "$DOCS_REVIEW_EFFORT" > "$RUNNER_TEMP/docs-status.json"
+            --model "$DOCS_MODEL" --effort "$DOCS_EFFORT" > "$RUNNER_TEMP/docs-status.json"
           status=$(jq -er '.status' "$RUNNER_TEMP/docs-status.json")
           case "$status" in
             docs-no-change|docs-ready-for-pr)
@@ -215,7 +212,7 @@ jobs:
               work_step_outcome: $outcome,
               status: ($run.status | one_of(["rejected", "needs-human", "verification-blocked", "docs-no-change", "docs-ready-for-pr"])),
               route: ((try $run.request.documentation_entry.route catch null) | one_of(["docs-no-change", "docs-assess", "docs-write"])),
-              stages: [$run.observations[]? | objects | .stage | one_of(["docs-assess", "docs-write", "docs-review", "docs-verify"]) | select(. != null)],
+              stages: [$run.observations[]? | objects | .stage | select(. == "docs-author")],
               native_openrouter_attempts: ($provider.attempts | numbers) // null,
               native_openrouter_cost_usd: ($provider.reported_cost_usd | numbers) // null
             }
