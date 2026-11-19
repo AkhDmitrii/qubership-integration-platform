@@ -15,6 +15,8 @@ import (
 )
 
 type publicationAPI struct {
+	disableDocs                                      bool
+	defaultBranch                                    string
 	markDoneOnClose                                  bool
 	changeHeadDuringFiles                            bool
 	headComparison                                   string
@@ -86,8 +88,18 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/repos/org/repo")
 	switch {
+	case path == "":
+		branch := a.defaultBranch
+		if branch == "" {
+			branch = "main"
+		}
+		write(map[string]string{"full_name": a.plan.Repository, "default_branch": branch})
 	case path == "/actions/variables/AGENT_DOCS_ENABLED":
-		write(map[string]string{"value": "true"})
+		value := "true"
+		if a.disableDocs {
+			value = "false"
+		}
+		write(map[string]string{"value": value})
 	case path == "/actions/variables/AGENT_DOCS_PUBLISHER_LOGIN":
 		write(map[string]string{"value": "agent-bot"})
 	case path == "/actions/variables/AGENT_ALLOWED_ACTORS":
@@ -114,6 +126,7 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		c := issueComment{ID: 5, Body: body.Body}
 		c.User.ID = 99
+		c.User.Login = a.viewerLogin
 		if a.foreignComment {
 			c.User.ID = 12
 		}
@@ -191,6 +204,7 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.pr = &pullRequest{ChangedFiles: 1, Number: 3, State: "open", Body: body.Body, HTMLURL: "https://github.com/org/repo/pull/3"}
+		a.pr.User.Login = a.viewerLogin
 		a.pr.Head.SHA = a.branch
 		a.pr.Head.Ref = body.Head
 		a.pr.Head.Repo.FullName = "org/repo"

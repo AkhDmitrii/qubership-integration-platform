@@ -50,20 +50,14 @@ type publisher struct {
 	runDir string
 }
 type issueComment struct {
-	ID   int64  `json:"id"`
-	Body string `json:"body"`
-	User struct {
-		ID int64 `json:"id"`
-	} `json:"user"`
+	ID   int64            `json:"id"`
+	Body string           `json:"body"`
+	User fixer.GitHubUser `json:"user"`
 }
 
 func AuthorizeActor(ctx context.Context, c *Client, actors ...string) error {
-	enabled, err := c.API.RepositoryVariable(ctx, "AGENT_DOCS_ENABLED")
-	if err != nil {
+	if err := authorizeDocsEnabled(ctx, c); err != nil {
 		return err
-	}
-	if enabled != "true" {
-		return fmt.Errorf("AGENT_DOCS_ENABLED must be true")
 	}
 	allowed, err := c.API.RepositoryVariable(ctx, "AGENT_ALLOWED_ACTORS")
 	if err != nil {
@@ -75,24 +69,38 @@ func AuthorizeActor(ctx context.Context, c *Client, actors ...string) error {
 	return nil
 }
 
+func authorizeDocsEnabled(ctx context.Context, c *Client) error {
+	enabled, err := c.API.RepositoryVariable(ctx, "AGENT_DOCS_ENABLED")
+	if err != nil {
+		return err
+	}
+	if enabled != "true" {
+		return fmt.Errorf("AGENT_DOCS_ENABLED must be true")
+	}
+	return nil
+}
+
 func Authorize(ctx context.Context, c *Client, actor string) error {
 	if err := AuthorizeActor(ctx, c, actor); err != nil {
 		return err
 	}
-	var publisherLogin struct {
-		Value string `json:"value"`
-	}
-	if err := c.Request(ctx, "GET", "/actions/variables/AGENT_DOCS_PUBLISHER_LOGIN", nil, &publisherLogin); err != nil {
-		return err
+	_, err := authorizePublisher(ctx, c)
+	return err
+}
+
+func authorizePublisher(ctx context.Context, c *Client) (string, error) {
+	publisherLogin, err := c.API.RepositoryVariable(ctx, "AGENT_DOCS_PUBLISHER_LOGIN")
+	if err != nil {
+		return "", err
 	}
 	identity, err := c.ActorIdentity(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if publisherLogin.Value == "" || !strings.EqualFold(identity.Login, publisherLogin.Value) {
-		return fmt.Errorf("authenticated publisher does not match AGENT_DOCS_PUBLISHER_LOGIN")
+	if publisherLogin == "" || !strings.EqualFold(identity.Login, publisherLogin) {
+		return "", fmt.Errorf("authenticated publisher does not match AGENT_DOCS_PUBLISHER_LOGIN")
 	}
-	return nil
+	return publisherLogin, nil
 }
 
 func marker(p Plan) string { return "<!-- qip-docs:" + p.ID + " -->" }

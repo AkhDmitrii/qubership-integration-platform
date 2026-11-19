@@ -60,7 +60,7 @@ func verifyDocumentationHead(ctx context.Context, c *Client, pr pullRequest, ori
 	if err = c.Request(ctx, "GET", fmt.Sprintf("/pulls/%d", pr.Number), nil, &observed); err != nil {
 		return err
 	}
-	if observed.Number != pr.Number || observed.Head.SHA != pr.Head.SHA || observed.Head.Ref != pr.Head.Ref || observed.Head.Repo.FullName != pr.Head.Repo.FullName || observed.Base.Ref != pr.Base.Ref || observed.Base.Repo.FullName != pr.Base.Repo.FullName || observed.Body != pr.Body || observed.ChangedFiles != pr.ChangedFiles || observed.State != pr.State || observed.Merged != pr.Merged {
+	if observed.Number != pr.Number || observed.User != pr.User || observed.Head.SHA != pr.Head.SHA || observed.Head.Ref != pr.Head.Ref || observed.Head.Repo.FullName != pr.Head.Repo.FullName || observed.Base.Ref != pr.Base.Ref || observed.Base.Repo.FullName != pr.Base.Repo.FullName || observed.Body != pr.Body || observed.ChangedFiles != pr.ChangedFiles || observed.State != pr.State || observed.Merged != pr.Merged {
 		return fmt.Errorf("documentation PR changed while its commits and files were checked")
 	}
 	return nil

@@ -10,31 +10,40 @@ import (
 )
 
 func VerifyDocumentationPR(ctx context.Context, c *Client, number int, publisherLogin string) error {
-	if number <= 0 || publisherLogin == "" {
-		return fmt.Errorf("PR and trusted publisher login are required")
+	pr, state, err := readDocumentationPR(ctx, c, number, publisherLogin)
+	if err != nil {
+		return err
 	}
+	return verifyDocumentationHead(ctx, c, pr, state.CommitSHA)
+}
+
+var documentationBranch = regexp.MustCompile(`^agent/docs/([1-9][0-9]*)/([a-f0-9]{12})$`)
+
+func readDocumentationPR(ctx context.Context, c *Client, number int, publisherLogin string) (pullRequest, Publication, error) {
 	var pr pullRequest
+	var publication Publication
+	if number <= 0 || publisherLogin == "" {
+		return pr, publication, fmt.Errorf("PR and trusted publisher login are required")
+	}
 	if e := c.Request(ctx, "GET", fmt.Sprintf("/pulls/%d", number), nil, &pr); e != nil {
-		return e
+		return pr, publication, e
 	}
-	m := regexp.MustCompile(`^agent/docs/([1-9][0-9]*)/([a-f0-9]{12})$`).FindStringSubmatch(pr.Head.Ref)
-	if len(m) != 3 || !strings.EqualFold(pr.User.Login, publisherLogin) || pr.Head.Repo.FullName != c.Repository || pr.Base.Repo.FullName != c.Repository {
-		return fmt.Errorf("PR is not a trusted documentation publication")
+	m := documentationBranch.FindStringSubmatch(pr.Head.Ref)
+	if len(m) != 3 || pr.Number != number || !strings.EqualFold(pr.User.Login, publisherLogin) || pr.Head.Repo.FullName != c.Repository || pr.Base.Repo.FullName != c.Repository {
+		return pr, publication, fmt.Errorf("PR is not a trusted documentation publication")
 	}
-	issue, _ := strconv.Atoi(m[1])
+	issue, err := strconv.Atoi(m[1])
+	if err != nil {
+		return pr, publication, fmt.Errorf("documentation branch issue number is invalid")
+	}
 	comments, e := c.API.List(ctx, fmt.Sprintf("/issues/%d/comments", issue), "")
 	if e != nil {
-		return e
+		return pr, publication, e
 	}
-	found := false
-	originalSHA := ""
 	for _, raw := range comments {
-		var comment struct {
-			Body string
-			User struct{ Login string }
-		}
+		var comment issueComment
 		if e = json.Unmarshal(raw, &comment); e != nil {
-			return e
+			return pr, publication, e
 		}
 		if !strings.EqualFold(comment.User.Login, publisherLogin) || !strings.HasPrefix(comment.Body, "<!-- qip-docs:") {
 			continue
@@ -51,16 +60,15 @@ func VerifyDocumentationPR(ctx context.Context, c *Client, number int, publisher
 			continue
 		}
 		if state.Branch != pr.Head.Ref || state.CandidateDigest == "" || p.DefaultBranch != pr.Base.Ref || (state.PRNumber != number && !(state.PRNumber == 0 && state.Status == "publishing")) {
-			return fmt.Errorf("PR differs from its recorded documentation publication")
+			return pr, publication, fmt.Errorf("PR differs from its recorded documentation publication")
 		}
-		if found {
-			return fmt.Errorf("multiple matching documentation state comments")
+		if publication.Plan != nil {
+			return pr, publication, fmt.Errorf("multiple matching documentation state comments")
 		}
-		found = true
-		originalSHA = state.CommitSHA
+		publication = state
 	}
-	if !found {
-		return fmt.Errorf("no matching authenticated documentation state")
+	if publication.Plan == nil {
+		return pr, publication, fmt.Errorf("no matching authenticated documentation state")
 	}
-	return verifyDocumentationHead(ctx, c, pr, originalSHA)
+	return pr, publication, nil
 }

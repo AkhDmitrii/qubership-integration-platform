@@ -82,6 +82,7 @@ func run(ctx context.Context, args []string) error {
 	runDir := f.String("run", "", "completed work output directory")
 	actor := f.String("actor", "", "trusted workflow initiating actor")
 	basis := f.String("basis", "", "documentation basis selected by discovery")
+	planID := f.String("plan-id", "", "documentation plan admitted for merge reconciliation")
 	reason := f.String("reason", "", "documentation queue skip reason")
 	apply := f.Bool("apply", false, "apply reviewed GitHub publication effects")
 	if e := f.Parse(args[1:]); e != nil {
@@ -91,6 +92,8 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("unexpected positional arguments")
 	}
 	switch args[0] {
+	case "route-merge", "reconcile-merge":
+		return handleDocumentationMerge(ctx, args[0], *repo, *publisherLogin, *number, *planID, *apply)
 	case "discover":
 		return discoverSchedule(ctx, *repo, *actor, *project, *number)
 	case "authorize-command", "reply-command":

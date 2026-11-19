@@ -121,6 +121,15 @@ func (p *publisher) complete(ctx context.Context, mergeSHA string) error {
 	return p.saveState(ctx, state)
 }
 func Reconcile(ctx context.Context, c *Client, plan Plan, options PublishOptions) (Publication, error) {
+	if options.Apply {
+		if err := Authorize(ctx, c, options.Actor); err != nil {
+			return Publication{PlanID: plan.ID, Status: "planned"}, err
+		}
+	}
+	return reconcile(ctx, c, plan, options.Apply, nil)
+}
+
+func reconcile(ctx context.Context, c *Client, plan Plan, apply bool, merge *documentationMerge) (Publication, error) {
 	p := &publisher{client: c, plan: plan, state: Publication{PlanID: plan.ID, Status: "planned"}}
 	if e := validatePublicationPlan(plan); e != nil {
 		return p.state, e
@@ -128,17 +137,17 @@ func Reconcile(ctx context.Context, c *Client, plan Plan, options PublishOptions
 	if c.Repository != plan.Repository {
 		return p.state, fmt.Errorf("repository mismatch")
 	}
-	if options.Apply {
-		if e := Authorize(ctx, c, options.Actor); e != nil {
-			return p.state, e
-		}
-	}
 	found, e := p.readState(ctx)
 	if e != nil {
 		return p.state, e
 	}
 	if !found {
 		return p.state, fmt.Errorf("no documentation publication exists for this plan")
+	}
+	if merge != nil && (p.state.PRNumber != merge.pr.Number || !p.state.Applied ||
+		p.state.Decision != "needed" || p.state.CommitSHA != merge.publication.CommitSHA ||
+		p.state.CandidateDigest != merge.publication.CandidateDigest) {
+		return p.state, fmt.Errorf("documentation publication changed after merge admission")
 	}
 	if p.state.PRNumber == 0 {
 		if p.state.Decision != "no_change" {
@@ -154,7 +163,7 @@ func Reconcile(ctx context.Context, c *Client, plan Plan, options PublishOptions
 			}
 			return p.state, nil
 		}
-		if !options.Apply {
+		if !apply {
 			return p.state, nil
 		}
 		e = p.complete(ctx, "")
@@ -166,6 +175,10 @@ func Reconcile(ctx context.Context, c *Client, plan Plan, options PublishOptions
 	}
 	if pr.Number != p.state.PRNumber || pr.Head.Ref != p.state.Branch || pr.Base.Ref != plan.DefaultBranch || pr.Head.Repo.FullName != plan.Repository || pr.Base.Repo.FullName != plan.Repository || !strings.Contains(pr.Body, marker(plan)) {
 		return p.state, fmt.Errorf("documentation PR no longer matches publication state")
+	}
+	if merge != nil && (!pr.Merged || pr.State != "closed" || pr.Head.SHA != merge.pr.Head.SHA ||
+		!strings.EqualFold(pr.User.Login, merge.pr.User.Login)) {
+		return p.state, fmt.Errorf("documentation merge changed after admission")
 	}
 	if e = verifyDocumentationHead(ctx, c, pr, p.state.CommitSHA); e != nil {
 		return p.state, e
@@ -182,7 +195,7 @@ func Reconcile(ctx context.Context, c *Client, plan Plan, options PublishOptions
 			state := p.state
 			state.Status = "needs-human"
 			state.UpdatedAfterPublication = adjusted
-			if options.Apply {
+			if apply {
 				e = p.saveState(ctx, state)
 			} else {
 				p.state = state
@@ -192,7 +205,7 @@ func Reconcile(ctx context.Context, c *Client, plan Plan, options PublishOptions
 		if p.state.UpdatedAfterPublication != adjusted {
 			state := p.state
 			state.UpdatedAfterPublication = adjusted
-			if options.Apply {
+			if apply {
 				e = p.saveState(ctx, state)
 			} else {
 				p.state = state
@@ -218,7 +231,7 @@ func Reconcile(ctx context.Context, c *Client, plan Plan, options PublishOptions
 	state := p.state
 	state.MergedHeadSHA = pr.Head.SHA
 	state.UpdatedAfterPublication = adjusted
-	if !options.Apply {
+	if !apply {
 		return state, nil
 	}
 	if e = p.saveState(ctx, state); e != nil {

@@ -6,7 +6,7 @@ Select **Run workflow**, enter the issue number, and choose an operation.
 
 - Choose `prepare` to freeze the issue, source revision, and change packet for local model work. This operation reads GitHub only.
 - Choose `run` to prepare the packet, run the documentation work, and validate a completed result. The publisher restores the exact candidate from the work artifact and checks it against the original preparation. With `apply` selected, it opens a draft documentation PR or records a no-change decision and completes the issue. If the work needs a decision, read the question in the run summary. Blocked verification fails the work job.
-- Choose `reconcile` after the documentation PR merges. Reconciliation recovers the original plan from the publisher's GitHub state and validates the merged PR against it. Select `apply` to complete the issue and move the project item to **Done**.
+- Choose `reconcile` to inspect or recover a documentation publication. Reconciliation recovers the original plan from the publisher's GitHub state and validates the PR against it. Select `apply` to complete an eligible issue and move the project item to **Done**.
 
 `apply` defaults to `false`. A new `run` dispatch starts a new plan and model run. To apply the exact result of a dry run, use the downloaded artifacts with the local publication command below.
 
@@ -76,6 +76,10 @@ Keep the workflow artifacts until publication finishes. To retry a failed public
 To publish a downloaded result locally, check out the plan's base commit and run `docs-agent restore --prepared ... --run ... --source ... --workspace ...` to restore the candidate into a new worktree. Pass that worktree as `--source` to `docs-agent publish --prepared ... --run ... --source ... --actor ... --apply`. For a hosted artifact, `--run` points to its `work/` directory. Omit `--apply` to validate the local publication without writes. Local applied publication requires a token whose login matches the declared actor and configured publisher. The initiating workflow actor may differ from the App publisher identity.
 
 Human reviewers can append documentation-only corrections to the published branch. The gate and merge reconciliation check ancestry and the complete PR file list, including rename origins. The original candidate identity remains recorded, with the later merge head marked separately; added commits are an observation, not automatically a classifier error. A rewritten unrelated head or a product-code change needs separate validation.
+
+When a publisher-owned documentation PR merges into the default branch, **Reconcile merged documentation** checks the merge and the publisher's canonical issue comment before completing the issue. A reviewer with merge permission can finish an authorized publication. The actor allowlist still governs manual operations. The merge workflow uses default-branch code and no model credentials.
+
+The workflow updates the issue and its project item once. If a merge check fails, inspect the workflow log and use the manual `reconcile` operation after resolving the failure.
 
 `docs-feedback import --run <completed-directory> --output <new-record.json>` validates a completed archive. `docs-feedback adjudicate` adds an explicit later judgment with actor, basis and evidence. `summary` separates independent observations of one dataset case from corrections to the same observation. Human and model judgments remain separate. Records use the current `docs-feedback-v2` schema and never overwrite earlier exports. Standalone downloaded archives can be validated after controlled path relocation; relocated resume chains need their original evidence layout.
 
