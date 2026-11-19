@@ -17,12 +17,18 @@ import (
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
 )
 
+type referencedPR struct {
+	state, closes, file string
+}
+
 type scheduleAPI struct {
 	publicationAPI
-	activeRuns                 []fixer.WorkflowRun
-	attempts                   map[string]fixer.WorkflowRun
-	jobs                       map[string][]any
-	enabled, apply, openDocsPR bool
+	activeRuns         []fixer.WorkflowRun
+	attempts           map[string]fixer.WorkflowRun
+	jobs               map[string][]any
+	enabled, apply     bool
+	reference          *referencedPR
+	implementationFile string
 }
 
 func scheduleFixture(t *testing.T) (*Client, *scheduleAPI, Plan) {
@@ -86,11 +92,14 @@ func (a *scheduleAPI) serve(w http.ResponseWriter, r *http.Request) {
 			graph(map[string]any{"repository": map[string]any{"owner": map[string]any{"projectV2": project}}})
 			return
 		}
-		if a.openDocsPR && strings.Contains(query.Query, "timelineItems") {
+		if a.reference != nil && strings.Contains(query.Query, "timelineItems") {
 			implementation := map[string]any{"number": 2, "merged": true, "baseRefName": "main", "repository": map[string]string{"nameWithOwner": "org/repo"}, "mergeCommit": map[string]string{"oid": a.plan.BaseSHA}}
-			existing := map[string]any{"number": 3, "state": "OPEN", "baseRefName": "main", "repository": map[string]string{"nameWithOwner": "org/repo"}}
+			existing := map[string]any{"number": 3, "state": a.reference.state, "merged": a.reference.state == "MERGED", "baseRefName": "main", "repository": map[string]string{"nameWithOwner": "org/repo"}}
+			if a.reference.closes != "" {
+				existing["closingIssuesReferences"] = map[string]any{"nodes": []any{map[string]any{"id": a.reference.closes, "number": 1}}}
+			}
 			timeline := map[string]any{"nodes": []any{map[string]any{"closer": implementation}, map[string]any{"source": existing}}}
-			graph(map[string]any{"repository": map[string]any{"issue": map[string]any{"timelineItems": timeline}}})
+			graph(map[string]any{"repository": map[string]any{"issue": map[string]any{"id": "ISSUE", "timelineItems": timeline}}})
 			return
 		}
 	}
@@ -122,8 +131,10 @@ func (a *scheduleAPI) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		write(run)
-	case path == "/pulls/3/files":
-		write([]map[string]string{{"filename": "help/docs/topic.md"}})
+	case path == "/pulls/2/files" && a.implementationFile != "":
+		write([]map[string]string{{"filename": a.implementationFile}})
+	case path == "/pulls/3/files" && a.reference != nil:
+		write([]map[string]string{{"filename": a.reference.file}})
 	default:
 		a.publicationAPI.serve(w, r)
 	}
@@ -132,17 +143,24 @@ func (a *scheduleAPI) serve(w http.ResponseWriter, r *http.Request) {
 func TestScheduleDiscoveryReportsEligibleAndSkippedWithoutWriting(t *testing.T) {
 	c, a, plan := scheduleFixture(t)
 	for _, tc := range []struct {
-		name   string
-		active []fixer.WorkflowRun
-		docsPR bool
-		reason string
+		name               string
+		active             []fixer.WorkflowRun
+		reference          *referencedPR
+		implementationFile string
+		reason             string
 	}{
 		{name: "eligible"},
 		{name: "active manual work", active: []fixer.WorkflowRun{{Status: "queued", DisplayTitle: "qip-docs|1|run"}}, reason: "active-docs-run"},
-		{name: "linked documentation PR", docsPR: true, reason: "existing-docs-pr"},
+		{name: "open documentation PR closes this issue", reference: &referencedPR{"OPEN", "ISSUE", "help/docs/topic.md"}, reason: "existing-docs-pr"},
+		{name: "open documentation PR mentions this issue", reference: &referencedPR{"OPEN", "", "help/docs/topic.md"}},
+		{name: "merged documentation PR mentions this issue", reference: &referencedPR{"MERGED", "", "help/docs/topic.md"}},
+		{name: "open documentation PR closes a foreign issue with the same number", reference: &referencedPR{"OPEN", "OTHER_ISSUE", "help/docs/topic.md"}},
+		{name: "merged product PR closes a foreign issue with the same number", reference: &referencedPR{"MERGED", "OTHER_ISSUE", "ui/src/App.tsx"}, reason: "ambiguous-implementations"},
+		{name: "implementing PR changes only e2e tests", implementationFile: "e2e/specs/ui/navigation.spec.ts"},
+		{name: "implementing PR changes only module tests", implementationFile: "engine/src/test/java/EngineTest.java"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a.activeRuns, a.openDocsPR = tc.active, tc.docsPR
+			a.activeRuns, a.reference, a.implementationFile = tc.active, tc.reference, tc.implementationFile
 			report, err := Discover(t.Context(), c, c.API, 12, 0)
 			if err != nil || a.commentCreates != 0 {
 				t.Fatal(report, err, a.commentCreates)
@@ -234,5 +252,21 @@ func TestCommandDiscoveryAndClaimUseTheSameChecksWithoutCronOptIn(t *testing.T) 
 	claimed, reason, err := ClaimSchedule(t.Context(), c, c.API, plan, scheduleBasis(plan), "alice", attempt, false)
 	if err != nil || !claimed || reason != "" || a.commentCreates != 1 {
 		t.Fatal(claimed, reason, err, a.commentCreates)
+	}
+}
+
+func TestCompletedDocumentationPRDoesNotBlockNewImplementation(t *testing.T) {
+	c, _, plan := scheduleFixture(t)
+	previous := plan
+	previous.ImplementingPRs = []docpacket.PR{{Number: 8, MergeSHA: strings.Repeat("c", 40), Target: "main"}}
+	previous.ID = ""
+	previous.ID = Digest(previous)
+	p := &publisher{client: c, plan: previous}
+	if err := p.saveState(t.Context(), Publication{Decision: "needed", Status: "completed", PRNumber: 9}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Discover(t.Context(), c, c.API, 12, 1)
+	if err != nil || len(report.Eligible) != 1 || report.Eligible[0].Basis != scheduleBasis(plan) {
+		t.Fatalf("new implementation after a completed documentation PR: %+v, %v", report, err)
 	}
 }

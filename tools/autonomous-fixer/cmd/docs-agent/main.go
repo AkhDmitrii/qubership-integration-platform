@@ -46,6 +46,23 @@ func git(ctx context.Context, source string, args ...string) error {
 	}
 	return nil
 }
+func preparePRHead(ctx context.Context, client *docgithub.Client, source string, pr docpacket.PR) (docpacket.PRHead, error) {
+	head, err := client.MergedPRHead(ctx, pr)
+	if err != nil {
+		return head, err
+	}
+	if git(ctx, source, "cat-file", "-e", head.SHA+"^{commit}") == nil {
+		return head, nil
+	}
+	ref := fmt.Sprintf("refs/pull/%d/head", pr.Number)
+	if git(ctx, source, "fetch", "--no-tags", "origin", ref) == nil && git(ctx, source, "cat-file", "-e", head.SHA+"^{commit}") == nil {
+		return head, nil
+	}
+	if err = git(ctx, source, "fetch", "--no-tags", "origin", head.SHA); err != nil {
+		return head, fmt.Errorf("fetch PR head %s: %w", head.SHA, err)
+	}
+	return head, git(ctx, source, "cat-file", "-e", head.SHA+"^{commit}")
+}
 func github(repo string) (*docgithub.Client, error) {
 	token := os.Getenv("GITHUB_TOKEN")
 	if token == "" {
@@ -135,17 +152,6 @@ func run(ctx context.Context, args []string) error {
 			return e
 		}
 		intake.Plan.RequestID = *requestID
-		intake.Plan.ID = ""
-		intake.Plan.ID = docgithub.Digest(intake.Plan)
-		if e = os.Mkdir(*output, 0700); e != nil {
-			return e
-		}
-		if e = save(filepath.Join(*output, "intake.json"), intake); e != nil {
-			return e
-		}
-		if e = save(filepath.Join(*output, "plan.json"), intake.Plan); e != nil {
-			return e
-		}
 		refs := []string{intake.Plan.BaseSHA}
 		for _, pr := range intake.Issue.PRs {
 			refs = append(refs, pr.MergeSHA)
@@ -157,7 +163,13 @@ func run(ctx context.Context, args []string) error {
 				}
 			}
 		}
-		packet, details, e := docpacket.Build(ctx, docpacket.Config{RepositoryPath: *source, Repository: *repo, DocsRef: intake.Plan.BaseSHA, Issue: intake.Issue, AutoRetrieve: true, MaxDiffBytes: 1000000, MaxDocBytes: 1000000, MaxSourceBytes: 256000})
+		packet, details, e := docpacket.Build(ctx, docpacket.Config{
+			RepositoryPath: *source, Repository: *repo, DocsRef: intake.Plan.BaseSHA, Issue: intake.Issue,
+			AutoRetrieve: true, MaxDiffBytes: 1000000, MaxDocBytes: 1000000, MaxSourceBytes: 256000,
+			ResolvePRHead: func(ctx context.Context, pr docpacket.PR) (docpacket.PRHead, error) {
+				return preparePRHead(ctx, client, *source, pr)
+			},
+		})
 		if e != nil {
 			return e
 		}
@@ -168,6 +180,9 @@ func run(ctx context.Context, args []string) error {
 		intake.Plan.PacketSHA256 = docgithub.Digest(packet)
 		intake.Plan.ID = ""
 		intake.Plan.ID = docgithub.Digest(intake.Plan)
+		if e = os.Mkdir(*output, 0700); e != nil {
+			return e
+		}
 		if e = save(filepath.Join(*output, "plan.json"), intake.Plan); e != nil {
 			return e
 		}

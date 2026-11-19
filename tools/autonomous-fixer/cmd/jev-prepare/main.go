@@ -12,19 +12,25 @@ import (
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/docpacket"
 )
 
+type datasetPR struct {
+	docpacket.PR
+	HeadSHA     string `json:"head_sha"`
+	CommitCount int    `json:"commit_count"`
+}
+
 type dataset struct {
 	Repository string `json:"repository"`
 	DocsRef    string `json:"docs_ref"`
 	Issues     []struct {
-		Number                int            `json:"number"`
-		Title                 string         `json:"title"`
-		Body                  string         `json:"body"`
-		URL                   string         `json:"url"`
-		PRs                   []docpacket.PR `json:"prs"`
-		Selected              []int          `json:"primary_linked_merged_prs"`
-		DocsPaths             []string       `json:"docs_paths"`
-		ClassificationSources []string       `json:"classification_sources"`
-		TimelineComplete      bool           `json:"timeline_complete"`
+		Number                int         `json:"number"`
+		Title                 string      `json:"title"`
+		Body                  string      `json:"body"`
+		URL                   string      `json:"url"`
+		PRs                   []datasetPR `json:"prs"`
+		Selected              []int       `json:"primary_linked_merged_prs"`
+		DocsPaths             []string    `json:"docs_paths"`
+		ClassificationSources []string    `json:"classification_sources"`
+		TimelineComplete      bool        `json:"timeline_complete"`
 	} `json:"issues"`
 }
 
@@ -71,16 +77,25 @@ func run(ctx context.Context, args []string) error {
 			selected[n] = true
 		}
 		issue := docpacket.Issue{Number: item.Number, Title: item.Title, Body: item.Body, URL: item.URL}
+		heads := map[int]docpacket.PRHead{}
 		for _, pr := range item.PRs {
 			if selected[pr.Number] {
-				issue.PRs = append(issue.PRs, pr)
+				issue.PRs = append(issue.PRs, pr.PR)
+				heads[pr.Number] = docpacket.PRHead{SHA: pr.HeadSHA, CommitCount: pr.CommitCount}
 				delete(selected, pr.Number)
 			}
 		}
 		if len(selected) > 0 {
 			return fmt.Errorf("issue #%d has selected PRs without source metadata", item.Number)
 		}
-		p, r, err := docpacket.Build(ctx, docpacket.Config{RepositoryPath: *repo, Repository: d.Repository, DocsRef: d.DocsRef, Issue: issue, AutoRetrieve: *autoRetrieve, DocsPaths: item.DocsPaths, SourcePaths: item.ClassificationSources, MaxDiffBytes: *maxDiff, MaxDocBytes: *maxDoc, MaxSourceBytes: *maxSource})
+		p, r, err := docpacket.Build(ctx, docpacket.Config{
+			RepositoryPath: *repo, Repository: d.Repository, DocsRef: d.DocsRef, Issue: issue,
+			AutoRetrieve: *autoRetrieve, DocsPaths: item.DocsPaths, SourcePaths: item.ClassificationSources,
+			MaxDiffBytes: *maxDiff, MaxDocBytes: *maxDoc, MaxSourceBytes: *maxSource,
+			ResolvePRHead: func(_ context.Context, pr docpacket.PR) (docpacket.PRHead, error) {
+				return heads[pr.Number], nil
+			},
+		})
 		dir := filepath.Join(*output, fmt.Sprintf("issue-%d", item.Number))
 		if e = os.Mkdir(dir, 0700); e != nil {
 			return e

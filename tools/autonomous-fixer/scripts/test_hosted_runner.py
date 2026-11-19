@@ -16,12 +16,16 @@ REPO = "Netcracker/qubership-integration-platform"
 IMAGE = "https://github.com/user-attachments/assets/3ade1d33-b370-43be-adac-b98b2c276ce1"
 
 
-def admitted_issue(body=None, sha="a" * 40):
+def admitted_issue(body=None, sha="a" * 40, legacy=False):
     title = "Navigation keeps the selected folder"
     issue = {"number": 878, "state": "open", "title": title, "body": body, "labels": [{"name": "ready-for-agent"}]}
-    checkpoint = {"issueNumber": 878, "taskId": "qip-878", "contract": {
-        "requirements": f"{title}\n\n{body or ''}", "baseSha": sha, "scopePaths": ["ui"],
-    }}
+    requirements = f"{title}\n\n{body or ''}"
+    contract = {"baseSha": sha, "scopePaths": ["ui"]}
+    if legacy:
+        contract["requirements"] = requirements
+    else:
+        contract["requirementsSha256"] = hashlib.sha256(requirements.encode("utf-8")).hexdigest()
+    checkpoint = {"issueNumber": 878, "taskId": "qip-878", "contract": contract}
     return checkpoint, issue
 
 
@@ -39,7 +43,7 @@ class HostedIssueTest(unittest.TestCase):
             directory = Path(temporary) / "assignment"
             hosted_issue.snapshot(checkpoint, issue, REPO, directory, "read-token", fetch)
             self.assertEqual(calls, [(IMAGE, REPO, "read-token")])
-            self.assertIn(checkpoint["contract"]["requirements"], (directory / "task.md").read_text())
+            self.assertIn(f"{issue['title']}\n\n{body}", (directory / "task.md").read_text())
             self.assertEqual((directory / "attachment-01.png").read_bytes(), b"example PNG data")
             self.assertNotIn("read-token", (directory / "attachments.json").read_text())
 
@@ -51,6 +55,21 @@ class HostedIssueTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed since admission"):
                 hosted_issue.snapshot(checkpoint, issue, REPO, directory, None, self.fail)
             self.assertFalse(directory.exists())
+
+    def test_captures_large_unicode_requirements_from_the_issue(self):
+        body = "Последовательность действий.\r\n" * 1800
+        checkpoint, issue = admitted_issue(body)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "assignment"
+            hosted_issue.snapshot(checkpoint, issue, REPO, directory, None)
+            self.assertIn(body.encode("utf-8"), (directory / "task.md").read_bytes())
+
+    def test_reads_a_legacy_checkpoint(self):
+        checkpoint, issue = admitted_issue("Previous work", legacy=True)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "assignment"
+            hosted_issue.snapshot(checkpoint, issue, REPO, directory, None)
+            self.assertIn(checkpoint["contract"]["requirements"], (directory / "task.md").read_text())
 
     def test_binds_the_authorized_answers_to_the_assignment(self):
         checkpoint, issue = admitted_issue()

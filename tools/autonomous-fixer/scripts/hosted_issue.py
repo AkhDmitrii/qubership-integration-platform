@@ -101,17 +101,22 @@ def render_answers(checkpoint):
 
 def snapshot(checkpoint, issue, repository, directory, token, fetch=download):
     issue_number = checkpoint["issueNumber"]
-    requirements = checkpoint["contract"]["requirements"]
+    contract = checkpoint["contract"]
     if not REPOSITORY.fullmatch(repository) or type(issue_number) is not int or issue_number < 1:
         raise ValueError("The checkpoint must name a repository issue")
     if issue["number"] != issue_number or issue["state"] != "open" or "pull_request" in issue:
         raise ValueError("The admitted issue is no longer open")
     if not any(label["name"] == "ready-for-agent" for label in issue["labels"]):
         raise ValueError("The admitted issue no longer has the ready-for-agent label")
-    if requirements != f"{issue['title']}\n\n{issue['body'] or ''}":
+    requirements = f"{issue['title']}\n\n{issue['body'] or ''}"
+    if "requirementsSha256" in contract:
+        requirements_current = hashlib.sha256(requirements.encode("utf-8")).hexdigest() == contract["requirementsSha256"]
+    else:
+        requirements_current = requirements == contract["requirements"]
+    if not requirements_current:
         raise ValueError("The issue title or description changed since admission")
     answers = render_answers(checkpoint)
-    scope_paths = checkpoint["contract"]["scopePaths"]
+    scope_paths = contract["scopePaths"]
     links = (raw.rstrip(".,;") for raw in URL.findall(requirements + answers))
     urls = list(dict.fromkeys(link for link in links if attachment_url(link, repository)))
     if len(urls) > MAX_ATTACHMENTS:
@@ -152,7 +157,7 @@ def snapshot(checkpoint, issue, repository, directory, token, fetch=download):
     write_json(directory / "issue.json", {
         "repository": repository,
         "number": issue_number,
-        "base_sha": checkpoint["contract"]["baseSha"],
+        "base_sha": contract["baseSha"],
         "task_id": checkpoint["taskId"],
         "scope_paths": scope_paths,
     })

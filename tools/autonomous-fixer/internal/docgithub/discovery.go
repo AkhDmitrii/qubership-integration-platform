@@ -164,12 +164,12 @@ func manualDocsRuns(ctx context.Context, actions *fixer.GitHubClient) (map[int]b
 }
 
 func linkedDocumentationPR(ctx context.Context, c *Client, issue int) (bool, error) {
-	refs, _, err := c.linkedReferences(ctx, issue)
+	refs, strong, err := c.linkedReferences(ctx, issue)
 	if err != nil {
 		return false, err
 	}
 	for number, pr := range refs {
-		if pr.BaseRefName != "main" || (!pr.Merged && pr.State != "OPEN") {
+		if pr.BaseRefName != "main" || pr.State != "OPEN" || !strong[number] {
 			continue
 		}
 		files, err := c.API.List(ctx, fmt.Sprintf("/pulls/%d/files", number), "")
@@ -269,7 +269,7 @@ func scheduleIssueBlock(ctx context.Context, c *Client, actions *fixer.GitHubCli
 				publication.PlanID != publication.Plan.ID || !strings.HasPrefix(comment.Body, marker(*publication.Plan)+"\n") {
 				return "", false, fmt.Errorf("invalid owned documentation publication state")
 			}
-			if publication.PRNumber > 0 {
+			if publication.PRNumber > 0 && (publication.Status != "completed" || scheduleBasis(*publication.Plan) == basis) {
 				return "existing-docs-pr", false, nil
 			}
 			if publication.Status != "completed" {

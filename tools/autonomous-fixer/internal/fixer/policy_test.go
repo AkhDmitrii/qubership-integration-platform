@@ -42,7 +42,7 @@ func TestRequirementsKeyIncludesBodyAtSameTimestamp(t *testing.T) {
 	s, c := initial(t)
 	s = apply(t, s, first, c)
 	s = apply(t, s, second, c)
-	if s.Contract.Version != 3 || s.Contract.Requirements != second.Requirements {
+	if s.Contract.Version != 3 || !s.Contract.matchesRequirements(second.Requirements) {
 		t.Fatal("same timestamp suppressed current requirements")
 	}
 	r, err := Transition(s, second, c)

@@ -26,7 +26,7 @@ Provide a JSON packet containing:
 - `scope`: the exact behavior, commit, or PR being assessed;
 - `issue`: issue context as JSON;
 - `repository`, `base_sha`, `head_sha`, `docs_sha`: the recorded source identities;
-- `changed_paths` and `diff`: the landed change, using the merge's first parent rather than a stale PR base;
+- `changed_paths` and `diff`: all changes in the verified Git range for each implementing PR;
 - `sources`: relevant source files as `{path, content}`;
 - `documentation`: current help pages in the same form;
 - `search_evidence`: searches actually performed and their results;
@@ -37,9 +37,9 @@ The classifier does not fetch or verify Git objects itself. The caller must asse
 
 ## Prepare real issues from Git
 
-`cmd/jev-prepare` builds packets from reviewed issue/PR metadata and committed source objects. It derives each merge's actual first parent, checks that the documentation revision contains every selected main-branch merge, includes all selected implementing PRs, and ignores dirty worktree files. Backports and unrelated cross-references must be excluded explicitly by the caller. This first implementation supports the main documentation line only.
+`cmd/jev-prepare` builds packets from reviewed issue and PR metadata and local Git objects. It checks that the documentation revision contains every selected merge on `main` and ignores uncommitted files. For a merge commit, the packet includes changes since its first parent. For a squash or rebase merge, the builder verifies the landed range against the original PR before including the diff. Exclude backports and unrelated cross-references from the dataset.
 
-The dataset contains `repository`, `docs_ref`, and `issues`. Each issue contains `number`, `title`, `body`, `url`, `timeline_complete`, `primary_linked_merged_prs` (numbers), `prs` (objects with `number`, `merge_sha`, `target`), `docs_paths`, and optional `classification_sources`. Manual expected outcomes belong in a separate file, not in the dataset.
+The dataset contains `repository`, `docs_ref`, and `issues`. Each issue contains `number`, `title`, `body`, `url`, `timeline_complete`, `primary_linked_merged_prs` (numbers), `prs`, `docs_paths`, and optional `classification_sources`. Each PR requires `number`, `merge_sha`, and `target`. For a squash or rebase merge, also supply the original PR commit count in `commit_count` and its full head commit SHA in `head_sha`. Fetch the original PR head into the local repository before preparing the packet. If the builder cannot verify the landed range, it writes `error.json` for the issue. Keep manual expected outcomes in a separate file.
 
 ```bash
 go -C tools/autonomous-fixer run ./cmd/jev-prepare \

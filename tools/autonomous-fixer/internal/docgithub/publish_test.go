@@ -30,6 +30,9 @@ type publicationAPI struct {
 	pr                                               *pullRequest
 	commentCreates, prCreates, closeCalls, doneCalls int
 	uncertainComment, uncertainPR, foreignComment    bool
+	closeFailure                                     int
+	projectFailure                                   string
+	failFirstProjectReadAfterUpdate                  bool
 }
 
 func apiFixture(t *testing.T, p Plan) (*Client, *publicationAPI) {
@@ -62,10 +65,20 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 				write(map[string]string{})
 				return
 			}
-			a.project = "DONE"
 			a.doneCalls++
+			if a.projectFailure != "" {
+				fmt.Fprint(w, a.projectFailure)
+				return
+			}
+			a.project = "DONE"
 			write(map[string]any{"data": map[string]any{"updateProjectV2ItemFieldValue": map[string]any{"projectV2Item": map[string]string{"id": "ITEM"}}}})
 		case strings.Contains(request.Query, "projectV2(number"):
+			if a.failFirstProjectReadAfterUpdate && a.doneCalls > 0 {
+				a.failFirstProjectReadAfterUpdate = false
+				w.WriteHeader(http.StatusServiceUnavailable)
+				write(map[string]string{})
+				return
+			}
 			write(map[string]any{"data": map[string]any{"repository": map[string]any{"owner": map[string]any{"projectV2": map[string]any{"id": "PROJECT", "fields": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"id": "FIELD", "name": "Status", "options": []any{map[string]string{"id": "REVIEW", "name": "In doc review"}, map[string]string{"id": "DONE", "name": "Done"}}}}}}}}, "node": map[string]any{"projectItems": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"id": "ITEM", "project": map[string]string{"id": "PROJECT"}, "fieldValueByName": map[string]any{"optionId": a.project, "field": map[string]string{"id": "FIELD"}}}}}}}})
 		case strings.Contains(request.Query, "pullRequest(number:"):
 			if a.pr == nil || request.Variables["number"] != float64(a.pr.Number) || request.Variables["owner"] != "org" || request.Variables["repo"] != "repo" {
@@ -107,8 +120,13 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 	case path == "/issues/1" && r.Method == "GET":
 		write(map[string]any{"number": 1, "node_id": "ISSUE", "title": a.plan.IssueTitle, "body": "Issue body", "state": a.state})
 	case path == "/issues/1" && r.Method == "PATCH":
-		a.state = "closed"
 		a.closeCalls++
+		if a.closeFailure != 0 {
+			w.WriteHeader(a.closeFailure)
+			write(map[string]string{})
+			return
+		}
+		a.state = "closed"
 		if a.markDoneOnClose {
 			a.project = "DONE"
 		}
@@ -286,6 +304,129 @@ func TestProjectAutomationCompletesAfterIssueClose(t *testing.T) {
 		t.Fatalf("close=%d project updates=%d comments=%d", a.closeCalls, a.doneCalls, a.commentCreates)
 	}
 }
+
+const projectPermissionDenied = `{"data":{"updateProjectV2ItemFieldValue":null},"errors":[{"type":"FORBIDDEN","path":["updateProjectV2ItemFieldValue"],"message":"Resource not accessible by integration"}]}`
+
+func TestReconcileRetriesRejectedCompletion(t *testing.T) {
+	for _, step := range []string{"issue close", "project completion"} {
+		t.Run(step, func(t *testing.T) {
+			ctx := context.Background()
+			plan, run, _ := publicationFixture(t, false)
+			plan.IssueState = "open"
+			plan.ID = ""
+			plan.ID = Digest(plan)
+			c, api := apiFixture(t, plan)
+			api.state = "open"
+			wantCloses, wantProjectUpdates := 1, 2
+			if step == "issue close" {
+				api.closeFailure = http.StatusForbidden
+				wantCloses, wantProjectUpdates = 2, 1
+			} else {
+				api.projectFailure = projectPermissionDenied
+			}
+			options := PublishOptions{Actor: "alice", Apply: true}
+			if _, err := Publish(ctx, c, plan, run, options); err == nil {
+				t.Fatal("rejected write reported success")
+			}
+			api.closeFailure, api.projectFailure = 0, ""
+			result, err := Reconcile(ctx, c, plan, options)
+			if err != nil || result.Status != "completed" {
+				t.Fatalf("reconcile after rejection: status=%s, error=%v", result.Status, err)
+			}
+			if api.closeCalls != wantCloses || api.doneCalls != wantProjectUpdates || api.commentCreates != 1 {
+				t.Fatalf("close=%d, project updates=%d, comments=%d", api.closeCalls, api.doneCalls, api.commentCreates)
+			}
+		})
+	}
+}
+
+func TestReconcileAfterFailedProjectReadback(t *testing.T) {
+	for _, test := range []struct {
+		name, response, wantStatus string
+		wantUpdates                int
+	}{
+		{"rejection", projectPermissionDenied, "completed", 2},
+		{"ambiguous response", `{`, "completing", 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			plan, run, _ := publicationFixture(t, false)
+			c, api := apiFixture(t, plan)
+			api.projectFailure = test.response
+			api.failFirstProjectReadAfterUpdate = true
+			options := PublishOptions{Actor: "alice", Apply: true}
+			if _, err := Publish(ctx, c, plan, run, options); err == nil || api.failFirstProjectReadAfterUpdate {
+				t.Fatalf("expected the first project read after the write to fail: %v", err)
+			}
+			api.projectFailure = ""
+			result, err := Reconcile(ctx, c, plan, options)
+			if result.Status != test.wantStatus || (err == nil) != (test.wantStatus == "completed") || api.doneCalls != test.wantUpdates {
+				t.Fatalf("status=%s, project updates=%d, error=%v", result.Status, api.doneCalls, err)
+			}
+		})
+	}
+}
+
+func TestReconcileBlocksAmbiguousCompletion(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		closeFailure   int
+		projectFailure string
+		wantDoneCalls  int
+	}{
+		{name: "server error", closeFailure: http.StatusInternalServerError},
+		{name: "malformed response", projectFailure: `{`, wantDoneCalls: 1},
+		{
+			name:           "permission error in mutation payload",
+			projectFailure: `{"data":{"updateProjectV2ItemFieldValue":null},"errors":[{"type":"FORBIDDEN","path":["updateProjectV2ItemFieldValue","projectV2Item"],"message":"Resource not accessible by integration"}]}`,
+			wantDoneCalls:  1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			plan, run, _ := publicationFixture(t, false)
+			plan.IssueState = "open"
+			plan.ID = ""
+			plan.ID = Digest(plan)
+			c, api := apiFixture(t, plan)
+			api.state = "open"
+			api.closeFailure, api.projectFailure = test.closeFailure, test.projectFailure
+			options := PublishOptions{Actor: "alice", Apply: true}
+			if _, err := Publish(ctx, c, plan, run, options); err == nil {
+				t.Fatal("ambiguous write reported success")
+			}
+			api.closeFailure, api.projectFailure = 0, ""
+			if _, err := Reconcile(ctx, c, plan, options); err == nil {
+				t.Fatal("reconciliation accepted an ambiguous write without readback proof")
+			}
+			if api.closeCalls != 1 || api.doneCalls != test.wantDoneCalls {
+				t.Fatalf("close=%d, project updates=%d", api.closeCalls, api.doneCalls)
+			}
+		})
+	}
+}
+
+func TestReconcilePreservesManualReopenAfterRejectedProjectCompletion(t *testing.T) {
+	ctx := context.Background()
+	plan, run, _ := publicationFixture(t, false)
+	plan.IssueState = "open"
+	plan.ID = ""
+	plan.ID = Digest(plan)
+	c, api := apiFixture(t, plan)
+	api.state, api.projectFailure = "open", projectPermissionDenied
+	options := PublishOptions{Actor: "alice", Apply: true}
+	if _, err := Publish(ctx, c, plan, run, options); err == nil || api.state != "closed" {
+		t.Fatalf("expected issue to close before the rejected project update: state=%s, error=%v", api.state, err)
+	}
+	api.state, api.projectFailure = "open", ""
+	if _, err := Reconcile(ctx, c, plan, options); err == nil {
+		t.Fatal("reconciliation accepted a manually reopened issue")
+	}
+	if api.closeCalls != 1 || api.doneCalls != 1 || api.state != "open" {
+		t.Fatalf("close=%d, project updates=%d, state=%s", api.closeCalls, api.doneCalls, api.state)
+	}
+}
+
 func TestPublicationStopsForStaleMovedOrUnauthorizedTask(t *testing.T) {
 	for _, change := range []string{"main", "project", "actor"} {
 		t.Run(change, func(t *testing.T) {

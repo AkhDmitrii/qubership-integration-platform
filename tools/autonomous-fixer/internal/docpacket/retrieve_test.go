@@ -50,7 +50,7 @@ func TestAutomaticRetrievalAtDocsRevision(t *testing.T) {
 	git("commit", "-m", "current")
 	ref := git("rev-parse", "HEAD")
 	write("help/docs/widget.md", "dirty documentation")
-	c := Config{RepositoryPath: dir, Repository: "owner/repo", DocsRef: ref, AutoRetrieve: true, Issue: Issue{Number: 1, Title: "WidgetPanel linked behavior", PRs: []PR{{Number: 2, MergeSHA: merge, Target: "main"}}}}
+	c := Config{RepositoryPath: dir, Repository: "owner/repo", DocsRef: ref, AutoRetrieve: true, Issue: Issue{Number: 1, Title: "WidgetPanel linked behavior", PRs: []PR{{Number: 2, MergeSHA: merge, Target: "main"}}}, ResolvePRHead: singleCommitPRHead}
 	p, r, e := Build(context.Background(), c)
 	if e != nil {
 		t.Fatal(e)
@@ -87,7 +87,7 @@ func TestAutomaticRetrievalAtDocsRevision(t *testing.T) {
 	git("add", "help/docs/widget.md")
 	git("commit", "-m", "documentation only")
 	docCommit := git("rev-parse", "HEAD")
-	docOnly := Config{RepositoryPath: dir, Repository: "owner/repo", DocsRef: docCommit, AutoRetrieve: true, Issue: Issue{Number: 3, Title: "WidgetPanel linked", PRs: []PR{{Number: 4, MergeSHA: docCommit, Target: "main"}}}}
+	docOnly := Config{RepositoryPath: dir, Repository: "owner/repo", DocsRef: docCommit, AutoRetrieve: true, Issue: Issue{Number: 3, Title: "WidgetPanel linked", PRs: []PR{{Number: 4, MergeSHA: docCommit, Target: "main"}}}, ResolvePRHead: singleCommitPRHead}
 	complete, _, err := Build(context.Background(), docOnly)
 	if err != nil || !complete.Complete {
 		t.Fatalf("complete documentation plan: %+v %v", complete.Limitations, err)

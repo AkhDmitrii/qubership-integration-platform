@@ -121,6 +121,30 @@ func TestActionRESTCheckpointAnswerAndStop(t *testing.T) {
 		t.Fatal("late completion dispatched work")
 	}
 }
+func TestActionRESTAcceptsLegacyStateAndCheckpoint(t *testing.T) {
+	api := testGitHubServer(t)
+	cfg, checkpoint := actionStart(t, api)
+	state := actionReadState(t, api)
+	state.Contract.RequirementsSHA256 = ""
+	state.Contract.Requirements = api.Issue.Requirements()
+	body, err := EncodeStateComment(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range api.Comments {
+		if api.Comments[i].User.ID == api.Bot.ID {
+			api.Comments[i].Body = body
+			break
+		}
+	}
+	checkpoint.Contract = state.Contract
+	cfg = actionComplete(api, cfg, checkpoint)
+	actionCall(t, "control", cfg)
+	if state := actionReadState(t, api); state.Phase != "waiting-human" {
+		t.Fatalf("legacy checkpoint did not reach the next phase: %s", state.Phase)
+	}
+}
+
 func TestActionRESTRejectsChangedCheckpointAndForeignArtifact(t *testing.T) {
 	api := testGitHubServer(t)
 	cfg, checkpoint := actionStart(t, api)

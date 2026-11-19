@@ -9,8 +9,36 @@ import (
 var shaPattern = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
 func nonempty(s string) bool { return strings.TrimSpace(s) != "" }
+func (c Contract) validRequirements() bool {
+	if c.RequirementsSHA256 == "" {
+		return nonempty(c.Requirements)
+	}
+	return c.Requirements == "" && digestPattern.MatchString(c.RequirementsSHA256) &&
+		c.RequirementsSHA256 == strings.ToLower(c.RequirementsSHA256)
+}
+
+func (c Contract) matchesRequirements(requirements string) bool {
+	if c.RequirementsSHA256 == "" {
+		return c.Requirements == requirements
+	}
+	return c.RequirementsSHA256 == requirementsSHA256(requirements)
+}
+
 func NewState(seed Seed, actor string) (*State, error) {
-	s := &State{SchemaVersion: SchemaVersion, TaskID: seed.TaskID, Repository: seed.Repository, IssueNumber: seed.IssueNumber, Phase: "queued", Desired: "running", Generation: 1, Initiator: strings.ToLower(actor), Contract: Contract{Version: 1, BaseSHA: seed.BaseSHA, TrustedSHA: seed.TrustedSHA, Requirements: seed.Requirements, ScopePaths: append([]string{}, seed.ScopePaths...), Criteria: []string{}}, Attempt: Attempt{ID: seed.TaskID + "/attempt/1", Number: 1, BaseSHA: seed.BaseSHA}, Executions: []Execution{}, WorkItems: []WorkItem{}, Decisions: []Decision{}, StopEpisodes: []StopEpisode{}, Effects: []Effect{}, Receipts: []string{}}
+	contract := Contract{
+		Version: 1, BaseSHA: seed.BaseSHA, TrustedSHA: seed.TrustedSHA,
+		ScopePaths: append([]string{}, seed.ScopePaths...), Criteria: []string{},
+	}
+	if nonempty(seed.Requirements) {
+		contract.RequirementsSHA256 = requirementsSHA256(seed.Requirements)
+	}
+	s := &State{
+		SchemaVersion: SchemaVersion, TaskID: seed.TaskID, Repository: seed.Repository, IssueNumber: seed.IssueNumber,
+		Phase: "queued", Desired: "running", Generation: 1, Initiator: strings.ToLower(actor),
+		Contract: contract, Attempt: Attempt{ID: seed.TaskID + "/attempt/1", Number: 1, BaseSHA: seed.BaseSHA},
+		Executions: []Execution{}, WorkItems: []WorkItem{}, Decisions: []Decision{},
+		StopEpisodes: []StopEpisode{}, Effects: []Effect{}, Receipts: []string{},
+	}
 	return s, ValidateState(s)
 }
 func ValidateState(s *State) error {
@@ -25,7 +53,7 @@ func ValidateState(s *State) error {
 		return bad("lifecycle")
 	}
 	c := s.Contract
-	if c.Version <= 0 || !shaPattern.MatchString(c.BaseSHA) || !shaPattern.MatchString(c.TrustedSHA) || !nonempty(c.Requirements) || len(c.ScopePaths) == 0 {
+	if c.Version <= 0 || !shaPattern.MatchString(c.BaseSHA) || !shaPattern.MatchString(c.TrustedSHA) || !c.validRequirements() || len(c.ScopePaths) == 0 {
 		return bad("contract")
 	}
 	if s.ControllerSHA != "" && !shaPattern.MatchString(s.ControllerSHA) {

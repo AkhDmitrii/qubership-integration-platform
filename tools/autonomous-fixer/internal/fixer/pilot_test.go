@@ -150,6 +150,46 @@ func TestPilotRegistersThenPublishesSelectedCandidate(t *testing.T) {
 	}
 }
 
+func TestPilotLongIssueRequirementsAndResume(t *testing.T) {
+	api := testGitHubServer(t)
+	body := strings.Repeat("Details about the reported behavior.\r\n", 1400)
+	api.Issue.Body = &body
+	cfg, first := actionStartPilot(t, api)
+	if first.Contract.Requirements != "" || first.Contract.RequirementsSHA256 != requirementsSHA256(api.Issue.Requirements()) {
+		t.Fatal("the checkpoint does not contain compact issue requirements")
+	}
+
+	revised := "Updated acceptance criteria.\n" + body
+	api.Issue.Body = &revised
+	if result, err := RunAction(context.Background(), "work", cfg); err == nil || result.Checkpoint != nil {
+		t.Fatal("the worker admitted requirements changed since dispatch")
+	}
+	stop := actionComment(api, cfg, 11, "alice", "/agent stop")
+	actionCall(t, "control", stop)
+	api.Issue.State = "closed"
+	cfg.EventName, cfg.Payload.WorkflowRun = "workflow_run", api.Runs[0]
+	actionCall(t, "control", cfg)
+	if state := actionReadState(t, api); state.Phase != "stopped" {
+		t.Fatalf("the worker did not stop: %s", state.Phase)
+	}
+
+	api.Issue.State = "open"
+	api.Issue.UpdatedAt = "2026-11-06T10:04:00Z"
+	cfg.EventName, cfg.Payload.Action = "issues", "edited"
+	cfg.Payload.Issue, cfg.Payload.Sender = api.Issue, api.Issue.User
+	cfg.Payload.Changes = map[string]json.RawMessage{"body": json.RawMessage(`{}`)}
+	if result := actionCall(t, "control", cfg); result.Result.Disposition != "accepted" || len(api.Runs) != 1 {
+		t.Fatal("the requirements edit did not update the stopped task")
+	}
+	resume := actionComment(api, cfg, 12, "alice", "/agent resume")
+	actionCall(t, "control", resume)
+	_, next := actionPilotWorker(t, api, resume)
+	if next.ContractVersion != first.ContractVersion+1 ||
+		next.Contract.Requirements != "" || next.Contract.RequirementsSHA256 != requirementsSHA256(api.Issue.Requirements()) {
+		t.Fatal("the resumed checkpoint does not match the revised requirements")
+	}
+}
+
 func TestPilotReportsQuestionAndCarriesAuthorizedAnswer(t *testing.T) {
 	api := testGitHubServer(t)
 	cfg, checkpoint := actionStartPilot(t, api)

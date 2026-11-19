@@ -71,7 +71,7 @@ func (a *GitHubAdapter) Context(ctx context.Context, event *Event) (TransitionCo
 	}
 	result := TransitionContext{Task: a.Task, WorkflowSHA: a.Task.TrustedSHA, AllowedActors: actors, Mode: a.Mode,
 		IssueUnavailable:    issue.Number != a.Task.IssueNumber || issue.State != "open" || !issue.ReadyForAgent(),
-		RequirementsCurrent: a.state != nil && a.state.Contract.Requirements == issue.Requirements()}
+		RequirementsCurrent: a.state != nil && a.state.Contract.matchesRequirements(issue.Requirements())}
 	if event != nil && event.Source.Kind == "workflow" {
 		execution, err := a.execution(event.ExecutionID)
 		if err != nil || event.Source.RunID <= 0 || event.Source.RunAttempt <= 0 {

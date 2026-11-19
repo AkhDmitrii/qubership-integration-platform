@@ -46,7 +46,7 @@ Run **QIP documentation queue** from the default branch to preview the configure
 
 The queue uses the same repository and project permissions as manual documentation work. The GitHub Actions actor and triggering actor must both be in `AGENT_ALLOWED_ACTORS`. For a cron run, GitHub chooses the actor associated with the schedule. Check that login in a scheduled preview before enabling application.
 
-The queue skips issues outside **In doc review**, issues without a merged implementing PR, and issues with existing documentation PRs or active documentation runs. It processes selected issues one at a time. A scheduled attempt claims the issue and its implementing changes after preparation. Manual and scheduled jobs share the same concurrency group for an issue.
+The queue skips issues outside **In doc review**, issues without a merged implementing PR, and issues with active documentation runs. An open help-only PR that explicitly closes the issue also takes precedence. A past mention in a merged help PR leaves the issue eligible. The queue processes selected issues one at a time. A scheduled attempt claims the issue and its implementing changes after preparation. Manual and scheduled jobs share the same concurrency group for an issue.
 
 If the claimed run stops before the documentation work step starts, a later queue run can try again. Once that step starts, the queue skips the same issue and implementing changes on later runs. Use the manual `run` operation to retry after inspecting the scheduled run. To return the queue to preview, unset `AGENT_DOCS_SCHEDULE_APPLY`.
 
@@ -65,11 +65,13 @@ Keep Codex subscription authentication on your local machine. Hosted work uses t
 - `docs-work-diagnostics-*` records the status, route, observed stages, and reported usage when available. Use it to inspect a failed or unresolved work job.
 - `docs-publish-*` and `docs-reconcile-*` contain publication and reconciliation logs. Applied publication also records its GitHub operations in a journal.
 
+If GitHub rejects the issue close or the project update, restore access and retry reconciliation. The publisher checks the issue and project before repeating a write. If the original write may have succeeded, inspect both before changing either.
+
 Keep the workflow artifacts until publication finishes. To retry a failed publication, rerun its failed job in the same workflow run so it can use the original artifacts.
 
 ## Local operation and feedback
 
-`docs-agent prepare` reads the issue, its project status and merged implementing PRs. Strong closing relationships select implementations; ambiguous production references remain explicit limitations. It accepts an already-closed issue in documentation review. The finalized plan binds the source revision, initial issue state and exact evidence packet. A reopened issue invalidates a plan prepared while it was closed.
+`docs-agent prepare` reads the issue, its project status and merged implementing PRs. A PR that closes the issue can qualify even when it changes only tests. Strong closing relationships select implementations; ambiguous production references remain explicit limitations. It accepts an already-closed issue in documentation review. For a squash or rebase merge, preparation verifies the landed changes against the original PR head and commit count. If verification fails, preparation stops before calling Jev. The finalized plan binds the source revision, initial issue state and exact evidence packet. A reopened issue invalidates a plan prepared while it was closed.
 
 `docs-agent work` uses the prepared packet. An incomplete packet routes directly to assessment and skips the billable Jev request. Completed output includes an immutable feedback record. A result that still needs an owner decision is preserved as an unresolved run and cannot publish completion.
 

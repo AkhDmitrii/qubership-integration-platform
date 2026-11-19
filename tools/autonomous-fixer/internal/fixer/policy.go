@@ -45,6 +45,11 @@ func contains(values []string, value string) bool {
 	}
 	return false
 }
+func requirementsSHA256(requirements string) string {
+	digest := sha256.Sum256([]byte(requirements))
+	return hex.EncodeToString(digest[:])
+}
+
 func EventKey(e Event) string {
 	s := e.Source
 	var fields []string
@@ -60,8 +65,7 @@ func EventKey(e Event) string {
 		}
 	case "issue":
 		if s.ID > 0 && s.Revision > 0 && strings.TrimSpace(e.Type) != "" {
-			digest := sha256.Sum256([]byte(e.Requirements))
-			fields = []string{"issue", id(s.ID), id(s.Revision), e.Type, hex.EncodeToString(digest[:])}
+			fields = []string{"issue", id(s.ID), id(s.Revision), e.Type, requirementsSHA256(e.Requirements)}
 		}
 	case "workflow":
 		if s.RunID > 0 && s.RunAttempt > 0 && s.CallbackID > 0 && strings.TrimSpace(e.Type) != "" {

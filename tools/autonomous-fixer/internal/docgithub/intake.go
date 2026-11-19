@@ -134,7 +134,7 @@ type linkedPR struct {
 	MergeCommit             struct{ OID string }
 	Repository              struct{ NameWithOwner string }
 	ClosingIssuesReferences struct {
-		Nodes    []struct{ Number int }
+		Nodes    []struct{ ID string }
 		PageInfo struct{ HasNextPage bool }
 	}
 }
@@ -143,12 +143,13 @@ func (c *Client) linkedReferences(ctx context.Context, number int) (map[int]link
 	cursor := any(nil)
 	refs := map[int]linkedPR{}
 	strong := map[int]bool{}
-	fields := `number merged state baseRefName repository{nameWithOwner} mergeCommit{oid} closingIssuesReferences(first:100){nodes{number} pageInfo{hasNextPage}}`
-	query := `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){issue(number:$number){timelineItems(first:100,after:$cursor,itemTypes:[CROSS_REFERENCED_EVENT,CLOSED_EVENT]){pageInfo{hasNextPage endCursor} nodes{... on CrossReferencedEvent{source{... on PullRequest{` + fields + `}}} ... on ClosedEvent{closer{... on PullRequest{` + fields + `}}}}}}}}`
+	fields := `number merged state baseRefName repository{nameWithOwner} mergeCommit{oid} closingIssuesReferences(first:100){nodes{id} pageInfo{hasNextPage}}`
+	query := `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){issue(number:$number){id timelineItems(first:100,after:$cursor,itemTypes:[CROSS_REFERENCED_EVENT,CLOSED_EVENT]){pageInfo{hasNextPage endCursor} nodes{... on CrossReferencedEvent{source{... on PullRequest{` + fields + `}}} ... on ClosedEvent{closer{... on PullRequest{` + fields + `}}}}}}}}`
 	for {
 		var data struct {
 			Repository struct {
 				Issue struct {
+					ID            string
 					TimelineItems struct {
 						PageInfo struct {
 							HasNextPage bool
@@ -177,19 +178,17 @@ func (c *Client) linkedReferences(ctx context.Context, number int) (map[int]link
 				continue
 			}
 			refs[pr.Number] = pr
-			if !pr.Merged {
-				continue
-			}
+
 			if isCloser {
 				strong[pr.Number] = true
 			}
-			if pr.ClosingIssuesReferences.PageInfo.HasNextPage {
-				return nil, nil, fmt.Errorf("PR #%d closing references are incomplete", pr.Number)
-			}
 			for _, i := range pr.ClosingIssuesReferences.Nodes {
-				if i.Number == number {
+				if i.ID != "" && i.ID == data.Repository.Issue.ID {
 					strong[pr.Number] = true
 				}
+			}
+			if !strong[pr.Number] && pr.ClosingIssuesReferences.PageInfo.HasNextPage {
+				return nil, nil, fmt.Errorf("PR #%d closing references are incomplete", pr.Number)
 			}
 		}
 		if !items.PageInfo.HasNextPage {
@@ -226,6 +225,7 @@ func (c *Client) linked(ctx context.Context, number int) ([]docpacket.PR, []int,
 			return nil, nil, nil, err
 		}
 		production := false
+		includesTests := false
 		for _, raw := range files {
 			var file struct {
 				Filename string `json:"filename"`
@@ -234,12 +234,14 @@ func (c *Client) linked(ctx context.Context, number int) ([]docpacket.PR, []int,
 				return nil, nil, nil, err
 			}
 			name := file.Filename
-			nonProduct := strings.HasPrefix(name, "help/") || strings.HasSuffix(strings.ToLower(name), ".md") || strings.HasPrefix(name, "e2e/") || strings.Contains(name, "/src/test/") || strings.Contains(name, "/tests/") || strings.HasPrefix(name, ".apm/")
+			isTest := strings.HasPrefix(name, "e2e/") || strings.Contains("/"+name, "/src/test/") || strings.Contains("/"+name, "/tests/")
+			includesTests = includesTests || isTest
+			nonProduct := strings.HasPrefix(name, "help/") || strings.HasSuffix(strings.ToLower(name), ".md") || isTest || strings.HasPrefix(name, ".apm/")
 			if !nonProduct {
 				production = true
 			}
 		}
-		if !production {
+		if !production && !(includesTests && strong[n]) {
 			excluded = append(excluded, n)
 			continue
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,20 @@ type HTTPError struct{ Status int }
 
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("GitHub request failed with status %d", e.Status)
+}
+
+var errGraphQLPermissionDenied = errors.New("GitHub GraphQL permission denied")
+
+func GitHubWriteRejected(err error) bool {
+	var response *HTTPError
+	if errors.As(err, &response) {
+		switch response.Status {
+		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
+			http.StatusUnprocessableEntity, http.StatusTooManyRequests:
+			return true
+		}
+	}
+	return errors.Is(err, errGraphQLPermissionDenied)
 }
 
 type GitHubClient struct {
@@ -212,12 +227,23 @@ func (c *GitHubClient) GraphQL(ctx context.Context, query string, variables map[
 	var envelope struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
-			Message string `json:"message"`
+			Message string            `json:"message"`
+			Type    string            `json:"type"`
+			Path    []json.RawMessage `json:"path"`
 		} `json:"errors"`
 	}
 	_, err := c.send(ctx, "POST", "graphql", map[string]any{"query": query, "variables": variables}, &envelope)
 	if err != nil {
 		return err
+	}
+	// A permission error in the mutation payload can follow a successful write.
+	if len(envelope.Errors) == 1 && envelope.Errors[0].Type == "FORBIDDEN" && envelope.Errors[0].Message != "" && len(envelope.Errors[0].Path) == 1 {
+		var field string
+		var data map[string]json.RawMessage
+		if json.Unmarshal(envelope.Errors[0].Path[0], &field) == nil && field != "" &&
+			json.Unmarshal(envelope.Data, &data) == nil && len(data) == 1 && string(data[field]) == "null" {
+			return errGraphQLPermissionDenied
+		}
 	}
 	if len(envelope.Errors) > 0 || len(envelope.Data) == 0 || string(envelope.Data) == "null" {
 		return fmt.Errorf("GitHub GraphQL request failed")

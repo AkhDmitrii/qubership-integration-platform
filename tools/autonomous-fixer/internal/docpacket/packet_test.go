@@ -10,6 +10,10 @@ import (
 	"testing"
 )
 
+func singleCommitPRHead(_ context.Context, pr PR) (PRHead, error) {
+	return PRHead{SHA: pr.MergeSHA, CommitCount: 1}, nil
+}
+
 func TestBuildEvidence(t *testing.T) {
 	dir := t.TempDir()
 	git := func(args ...string) string {
@@ -51,7 +55,7 @@ func TestBuildEvidence(t *testing.T) {
 	git("merge", "--no-ff", "feature", "-m", "merge")
 	merge := git("rev-parse", "HEAD")
 	write("help/docs/current.md", "dirty worktree should not appear")
-	c := Config{RepositoryPath: dir, Repository: "owner/repo", DocsRef: merge, Issue: Issue{Number: 170, Title: "test PR", Body: "full issue body", URL: "https://example.test/170", PRs: []PR{{Number: 42, MergeSHA: merge, Target: "main"}}}, DocsPaths: []string{"help/docs/current.md"}}
+	c := Config{RepositoryPath: dir, Repository: "owner/repo", DocsRef: merge, Issue: Issue{Number: 170, Title: "test PR", Body: "full issue body", URL: "https://example.test/170", PRs: []PR{{Number: 42, MergeSHA: merge, Target: "main"}}}, DocsPaths: []string{"help/docs/current.md"}, ResolvePRHead: singleCommitPRHead}
 	p, r, e := Build(context.Background(), c)
 	if e != nil {
 		t.Fatal(e)
@@ -175,7 +179,7 @@ func TestCurrentDocumentationAndAssets(t *testing.T) {
 	git("commit", "-m", "current documentation")
 	docs := git("rev-parse", "HEAD")
 	write("src/main/consumer.go", "dirty source")
-	c := Config{RepositoryPath: dir, Repository: "owner/repo", DocsRef: docs, Issue: Issue{Number: 852, Title: "service change", PRs: []PR{{Number: 1, MergeSHA: merge, Target: "main"}}}, SourcePaths: []string{"src/main/consumer.go"}, MaxDiffBytes: 1000}
+	c := Config{RepositoryPath: dir, Repository: "owner/repo", DocsRef: docs, Issue: Issue{Number: 852, Title: "service change", PRs: []PR{{Number: 1, MergeSHA: merge, Target: "main"}}}, SourcePaths: []string{"src/main/consumer.go"}, MaxDiffBytes: 1000, ResolvePRHead: singleCommitPRHead}
 	p, r, e := Build(context.Background(), c)
 	if e != nil {
 		t.Fatal(e)

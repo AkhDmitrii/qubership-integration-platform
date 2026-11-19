@@ -36,7 +36,7 @@ func TestStateCommentEncoding(t *testing.T) {
 	if _, err = DecodeStateComment("<!-- qip-agent-state:v1 " + base64.StdEncoding.EncodeToString(data) + " -->"); err == nil {
 		t.Fatal("accepted unknown state property")
 	}
-	state.Contract.Requirements = strings.Repeat("x", 65536)
+	state.Receipts = []string{strings.Repeat("x", 65536)}
 	if _, err = EncodeStateComment(state); err == nil {
 		t.Fatal("truncated large state")
 	}
@@ -64,7 +64,7 @@ func TestCommentStorePreflightAndCanonicalIdentity(t *testing.T) {
 	next := cloneState(state)
 	next.Revision++
 	live := cloneState(state)
-	live.Contract.Requirements = "Changed requirements"
+	live.Contract.RequirementsSHA256 = requirementsSHA256("Changed requirements")
 	comments[0].Body, _ = EncodeStateComment(live)
 	if err = store.WriteState(context.Background(), next); err == nil {
 		t.Fatal("overwrote changed state")

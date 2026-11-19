@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
 )
 
 type pullRequest struct {
@@ -84,6 +86,10 @@ func (p *publisher) complete(ctx context.Context, mergeSHA string) error {
 		}
 		requestErr := p.client.Request(ctx, "PATCH", fmt.Sprintf("/issues/%d", p.plan.IssueNumber), map[string]string{"state": "closed", "state_reason": "completed"}, nil)
 		current, e = p.revalidate(ctx, mergeSHA)
+		if current.IssueState != "closed" && fixer.GitHubWriteRejected(requestErr) {
+			state.CloseAttempted = false
+			return errors.Join(fmt.Errorf("issue close was rejected: %w", requestErr), e, p.saveState(ctx, state))
+		}
 		if e != nil {
 			return e
 		}
@@ -104,6 +110,10 @@ func (p *publisher) complete(ctx context.Context, mergeSHA string) error {
 		query := `mutation($project:ID!,$item:ID!,$field:ID!,$option:String!){updateProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field,value:{singleSelectOptionId:$option}}){projectV2Item{id}}}`
 		requestErr := p.client.GraphQL(ctx, query, map[string]any{"project": p.plan.Project.ID, "item": p.plan.Project.ItemID, "field": p.plan.Project.StatusFieldID, "option": p.plan.Project.DoneOptionID}, nil)
 		current, e = p.revalidate(ctx, mergeSHA)
+		if current.ProjectStatus != p.plan.Project.DoneOptionID && fixer.GitHubWriteRejected(requestErr) {
+			state.ProjectDoneAttempted = false
+			return errors.Join(fmt.Errorf("project completion was rejected: %w", requestErr), e, p.saveState(ctx, state))
+		}
 		if e != nil {
 			return e
 		}

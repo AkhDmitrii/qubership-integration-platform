@@ -20,6 +20,10 @@ type PR struct {
 	MergeSHA string `json:"merge_sha"`
 	Target   string `json:"target"`
 }
+type PRHead struct {
+	SHA         string
+	CommitCount int
+}
 type Issue struct {
 	Number int    `json:"number"`
 	Title  string `json:"title"`
@@ -33,6 +37,7 @@ type Config struct {
 	AutoRetrieve                        bool
 	DocsPaths                           []string
 	SourcePaths                         []string
+	ResolvePRHead                       func(context.Context, PR) (PRHead, error)
 	MaxSourceBytes                      int
 	MaxDiffBytes, MaxDocBytes           int
 }
@@ -155,7 +160,10 @@ func Build(ctx context.Context, c Config) (doctriage.Packet, BuildReport, error)
 		}
 		return out, nil
 	}
-	fail := func(err error) (doctriage.Packet, BuildReport, error) { return p, r, err }
+	fail := func(err error) (doctriage.Packet, BuildReport, error) {
+		p.Complete = false
+		return p, r, err
+	}
 	resolve := func(ref string) (string, error) {
 		b, e := git("rev-parse", "--verify", ref+"^{commit}")
 		return strings.TrimSpace(string(b)), e
@@ -205,12 +213,12 @@ func Build(ctx context.Context, c Config) (doctriage.Packet, BuildReport, error)
 		if e != nil {
 			return fail(e)
 		}
-		base, e := resolve(merge + "^1")
-		if e != nil {
-			return fail(e)
-		}
 		if _, e = git("merge-base", "--is-ancestor", merge, p.DocsSHA); e != nil {
 			return fail(fmt.Errorf("documentation revision %s does not contain PR #%d merge %s: %w", p.DocsSHA, pr.Number, merge, e))
+		}
+		base, evidence, e := landedBase(ctx, git, c.ResolvePRHead, pr, merge)
+		if e != nil {
+			return fail(fmt.Errorf("resolve landed changes for PR #%d: %w", pr.Number, e))
 		}
 		if p.BaseSHA == "" {
 			p.BaseSHA = base
@@ -221,7 +229,7 @@ func Build(ctx context.Context, c Config) (doctriage.Packet, BuildReport, error)
 			return fail(e)
 		}
 		r.PRs = append(r.PRs, PRReport{pr.Number, merge, base, len(full), digest(full)})
-		p.SearchEvidence = append(p.SearchEvidence, fmt.Sprintf("PR #%d target main; actual first parent %s; merge %s; complete raw diff SHA256 %s (%d bytes).", pr.Number, base, merge, digest(full), len(full)))
+		p.SearchEvidence = append(p.SearchEvidence, fmt.Sprintf("PR #%d landed on main. Base %s, tip %s, and raw diff SHA256 %s (%d bytes). %s", pr.Number, base, merge, digest(full), len(full), evidence))
 		names, e := git("diff", "--name-only", "--no-renames", "-z", base, merge, "--")
 		if e != nil {
 			return fail(e)
@@ -276,7 +284,7 @@ func Build(ctx context.Context, c Config) (doctriage.Packet, BuildReport, error)
 			}
 			header := ""
 			if !headerIncluded {
-				header = fmt.Sprintf("\nPR #%d: %s..%s (actual first parent)\n", pr.Number, base, merge)
+				header = fmt.Sprintf("\nPR #%d: %s..%s\n", pr.Number, base, merge)
 				headerIncluded = true
 			}
 			available := c.MaxDiffBytes - patch.Len()

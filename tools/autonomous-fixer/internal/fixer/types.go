@@ -21,13 +21,14 @@ type Seed struct {
 }
 
 type Contract struct {
-	Version        int      `json:"version"`
-	BaseSHA        string   `json:"baseSha"`
-	TrustedSHA     string   `json:"trustedSha"`
-	Requirements   string   `json:"requirements"`
-	ScopePaths     []string `json:"scopePaths"`
-	AllowCIChanges bool     `json:"allowCiChanges"`
-	Criteria       []string `json:"criteria"`
+	Version            int      `json:"version"`
+	BaseSHA            string   `json:"baseSha"`
+	TrustedSHA         string   `json:"trustedSha"`
+	Requirements       string   `json:"requirements,omitempty"`
+	RequirementsSHA256 string   `json:"requirementsSha256,omitempty"`
+	ScopePaths         []string `json:"scopePaths"`
+	AllowCIChanges     bool     `json:"allowCiChanges"`
+	Criteria           []string `json:"criteria"`
 }
 
 type Attempt struct {

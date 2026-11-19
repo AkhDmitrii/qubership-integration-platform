@@ -78,7 +78,7 @@ Before enabling the workflows, validate repository permissions, workflow concurr
 
 An allowed user starts a task with `/agent fix` or the `ready-for-agent` label. Supported comment commands include `/agent status`, `/agent stop`, `/agent resume`, `/agent retry`, and `/agent answer <question-id> <question-version> <contract-version> <answer>`. The canonical state comment lists open questions and their answer syntax.
 
-Only newly created comments execute commands. Editing a comment does not issue another command. The event decoder checks the actor and source identity; workflow trust comes from GitHub reads rather than a callback's own claim. Requirements edits update the contract version. Their receipt identity includes the requirements body hash so distinct edits within one timestamp remain distinct.
+Only newly created comments execute commands. Editing a comment does not issue another command. The event decoder checks the actor and source identity; workflow trust comes from GitHub reads rather than a callback's own claim. The contract records a SHA-256 digest of the issue title and body. The worker reads both from GitHub and checks the digest before using the text. Requirements edits update the contract version. Their receipt identity includes the requirements body hash so distinct edits within one timestamp remain distinct.
 
 A task has one current engineering attempt. Resume retains the attempt; retry creates another. Each execution has a generation, contract version, trusted workflow commit, and exact GitHub run ID and attempt. The controller admits a run only after observing its dispatch and saving admission. Review and diagnosis work-item records exist, but their scheduling is not implemented.
 

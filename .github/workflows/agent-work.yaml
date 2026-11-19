@@ -205,7 +205,6 @@ jobs:
           QIP_PILOT_EFFORT: ${{ vars.QIP_PILOT_EFFORT || 'high' }}
           QIP_PILOT_REVIEW_MODEL: ${{ vars.QIP_PILOT_REVIEW_MODEL || 'openrouter/openai/gpt-6.1-terra' }}
           QIP_PILOT_REVIEW_EFFORT: ${{ vars.QIP_PILOT_REVIEW_EFFORT || 'medium' }}
-          QIP_PILOT_REVIEW_SCOPE: ${{ vars.QIP_PILOT_REVIEW_SCOPE }}
         run: |
           python3 "$GITHUB_WORKSPACE/trusted/tools/autonomous-fixer/scripts/hosted_launch.py" \
             "$GITHUB_WORKSPACE/candidate" "$PILOT_DIR/assignment" "$PILOT_DIR" \

@@ -212,7 +212,8 @@ func Transition(previous *State, event Event, context TransitionContext) (Result
 			return reject("Requirements must not be empty.")
 		}
 		s.Contract.Version++
-		s.Contract.Requirements = event.Requirements
+		s.Contract.Requirements = ""
+		s.Contract.RequirementsSHA256 = requirementsSHA256(event.Requirements)
 		s.Contract.Criteria = []string{}
 		s.Generation++
 		supersede(s)
