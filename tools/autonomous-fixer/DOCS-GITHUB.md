@@ -34,6 +34,22 @@ Choose one GitHub credential mode.
 
 The publisher rereads the enable switch, actor allowlist, and publisher identity from GitHub before applying changes. The pinned App token action reads `INPUT_PERMISSION-VARIABLES` from its environment to request repository Variables read. Check that input when updating the action.
 
+## Process the documentation queue
+
+Run **QIP documentation queue** from the default branch to preview the configured project. Leave **Apply** clear. The job lists eligible issue numbers and records the reason for each skipped item in `docs-discovery-*`. Preview uses GitHub reads and finishes before model work.
+
+| Repository variable | Value |
+| --- | --- |
+| `AGENT_DOCS_SCHEDULE_ENABLED` | Set to `true` to run discovery every hour at minute 17 UTC. |
+| `AGENT_DOCS_SCHEDULE_APPLY` | Set to `true` after checking a live preview. Scheduled runs then process eligible issues. Manual queue runs also require **Apply**. |
+| `AGENT_DOCS_SCHEDULE_BATCH_SIZE` | Maximum issues to process in one run, from 1 to 10. Defaults to 2. The preview still lists every eligible issue. |
+
+The queue uses the same repository and project permissions as manual documentation work. The GitHub Actions actor and triggering actor must both be in `AGENT_ALLOWED_ACTORS`. For a cron run, GitHub chooses the actor associated with the schedule. Check that login in a scheduled preview before enabling application.
+
+The queue skips issues outside **In doc review**, issues without a merged implementing PR, and issues with existing documentation PRs or active documentation runs. It processes selected issues one at a time. A scheduled attempt claims the issue and its implementing changes after preparation. Manual and scheduled jobs share the same concurrency group for an issue.
+
+If the claimed run stops before the documentation work step starts, a later queue run can try again. Once that step starts, the queue skips the same issue and implementing changes on later runs. Use the manual `run` operation to retry after inspecting the scheduled run. To return the queue to preview, unset `AGENT_DOCS_SCHEDULE_APPLY`.
+
 ## Model execution and evidence
 
 Keep Codex subscription authentication on your local machine. Hosted work uses the separately billed OpenRouter key. The work job uses a read-only workflow token for checkout and artifact download. The GitHub App key and personal access tokens stay in the preparation, publication, and reconciliation jobs.

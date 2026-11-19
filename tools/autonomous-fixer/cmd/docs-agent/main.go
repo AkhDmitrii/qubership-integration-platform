@@ -58,7 +58,7 @@ func github(repo string) (*docgithub.Client, error) {
 }
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: docs-agent prepare|work|publish|reconcile")
+		return fmt.Errorf("usage: docs-agent prepare|work|publish|reconcile|discover|claim")
 	}
 	f := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	repo := f.String("repository", "", "GitHub owner/repository")
@@ -81,6 +81,7 @@ func run(ctx context.Context, args []string) error {
 	keyFile := f.String("key-file", "", "private OpenRouter key file")
 	runDir := f.String("run", "", "completed work output directory")
 	actor := f.String("actor", "", "trusted workflow initiating actor")
+	basis := f.String("basis", "", "documentation basis selected by discovery")
 	apply := f.Bool("apply", false, "apply reviewed GitHub publication effects")
 	if e := f.Parse(args[1:]); e != nil {
 		return e
@@ -89,6 +90,13 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("unexpected positional arguments")
 	}
 	switch args[0] {
+	case "discover":
+		return discoverSchedule(ctx, *repo, *actor, *project)
+	case "claim":
+		if !*apply {
+			return fmt.Errorf("claim requires --apply")
+		}
+		return claimSchedule(ctx, *prepared, *basis, *actor)
 	case "verify-pr":
 		c, e := github(*repo)
 		if e != nil {

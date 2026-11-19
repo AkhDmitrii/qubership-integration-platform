@@ -2,12 +2,18 @@ package docgithub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
 	"strings"
 
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/docpacket"
+)
+
+var (
+	errNoImplementation = errors.New("no unambiguous merged implementing pull request found")
+	errNotInDocReview   = errors.New("issue is not in In doc review")
 )
 
 type Prepared struct {
@@ -114,6 +120,7 @@ func (c *Client) project(ctx context.Context, node, projectID string, number int
 type linkedPR struct {
 	Number                  int
 	Merged                  bool
+	State                   string
 	BaseRefName             string
 	MergeCommit             struct{ OID string }
 	Repository              struct{ NameWithOwner string }
@@ -123,11 +130,11 @@ type linkedPR struct {
 	}
 }
 
-func (c *Client) linked(ctx context.Context, number int) ([]docpacket.PR, []int, []int, error) {
+func (c *Client) linkedReferences(ctx context.Context, number int) (map[int]linkedPR, map[int]bool, error) {
 	cursor := any(nil)
 	refs := map[int]linkedPR{}
 	strong := map[int]bool{}
-	fields := `number merged baseRefName repository{nameWithOwner} mergeCommit{oid} closingIssuesReferences(first:100){nodes{number} pageInfo{hasNextPage}}`
+	fields := `number merged state baseRefName repository{nameWithOwner} mergeCommit{oid} closingIssuesReferences(first:100){nodes{number} pageInfo{hasNextPage}}`
 	query := `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){issue(number:$number){timelineItems(first:100,after:$cursor,itemTypes:[CROSS_REFERENCED_EVENT,CLOSED_EVENT]){pageInfo{hasNextPage endCursor} nodes{... on CrossReferencedEvent{source{... on PullRequest{` + fields + `}}} ... on ClosedEvent{closer{... on PullRequest{` + fields + `}}}}}}}}`
 	for {
 		var data struct {
@@ -148,7 +155,7 @@ func (c *Client) linked(ctx context.Context, number int) ([]docpacket.PR, []int,
 		}
 		parts := strings.Split(c.Repository, "/")
 		if err := c.GraphQL(ctx, query, map[string]any{"owner": parts[0], "repo": parts[1], "number": number, "cursor": cursor}, &data); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
 		items := data.Repository.Issue.TimelineItems
 		for _, event := range items.Nodes {
@@ -157,15 +164,18 @@ func (c *Client) linked(ctx context.Context, number int) ([]docpacket.PR, []int,
 			if isCloser {
 				pr = event.Closer
 			}
-			if !pr.Merged || pr.Repository.NameWithOwner != c.Repository {
+			if pr.Number <= 0 || pr.Repository.NameWithOwner != c.Repository {
 				continue
 			}
 			refs[pr.Number] = pr
+			if !pr.Merged {
+				continue
+			}
 			if isCloser {
 				strong[pr.Number] = true
 			}
 			if pr.ClosingIssuesReferences.PageInfo.HasNextPage {
-				return nil, nil, nil, fmt.Errorf("PR #%d closing references are incomplete", pr.Number)
+				return nil, nil, fmt.Errorf("PR #%d closing references are incomplete", pr.Number)
 			}
 			for _, i := range pr.ClosingIssuesReferences.Nodes {
 				if i.Number == number {
@@ -177,9 +187,17 @@ func (c *Client) linked(ctx context.Context, number int) ([]docpacket.PR, []int,
 			break
 		}
 		if items.PageInfo.EndCursor == "" || items.PageInfo.EndCursor == cursor {
-			return nil, nil, nil, fmt.Errorf("issue timeline pagination did not advance")
+			return nil, nil, fmt.Errorf("issue timeline pagination did not advance")
 		}
 		cursor = items.PageInfo.EndCursor
+	}
+	return refs, strong, nil
+}
+
+func (c *Client) linked(ctx context.Context, number int) ([]docpacket.PR, []int, []int, error) {
+	refs, strong, err := c.linkedReferences(ctx, number)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	numbers := []int{}
 	for n := range refs {
@@ -191,7 +209,7 @@ func (c *Client) linked(ctx context.Context, number int) ([]docpacket.PR, []int,
 	ambiguous := []int{}
 	for _, n := range numbers {
 		pr := refs[n]
-		if pr.BaseRefName != "main" {
+		if !pr.Merged || pr.BaseRefName != "main" {
 			continue
 		}
 		files, err := c.API.List(ctx, fmt.Sprintf("/pulls/%d/files", n), "")
@@ -251,14 +269,14 @@ func Prepare(ctx context.Context, c *Client, number, projectNumber int) (Prepare
 		return out, err
 	}
 	if status != project.ReviewOptionID {
-		return out, fmt.Errorf("issue is not in In doc review")
+		return out, errNotInDocReview
 	}
 	prs, excluded, ambiguous, err := c.linked(ctx, number)
 	if err != nil {
 		return out, err
 	}
 	if len(prs) == 0 {
-		return out, fmt.Errorf("no unambiguous merged implementing pull request found")
+		return out, errNoImplementation
 	}
 	out.Excluded = excluded
 	out.Ambiguous = ambiguous

@@ -1,4 +1,5 @@
 name: QIP documentation agent
+run-name: qip-docs|${{ inputs.issue }}|${{ inputs.operation }}
 
 on:
   workflow_dispatch:
@@ -18,21 +19,51 @@ on:
         required: true
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      issue:
+        type: string
+        required: true
+      operation:
+        type: string
+        default: run
+      apply:
+        type: boolean
+        required: true
+      scheduled_basis:
+        type: string
+        required: true
+    secrets:
+      AGENT_DOCS_APP_PRIVATE_KEY:
+        required: false
+      AGENT_DOCS_READ_TOKEN:
+        required: false
+      AGENT_DOCS_GITHUB_TOKEN:
+        required: false
+      OPENROUTER_API_KEY:
+        required: false
 
 permissions: {}
+
+concurrency:
+  group: qip-docs-issue-${{ inputs.issue }}
+  cancel-in-progress: false
+  queue: max
 
 jobs:
   prepare:
     if: >-
       ${{ (inputs.operation == 'prepare' || inputs.operation == 'run') && vars.AGENT_DOCS_ENABLED == 'true' &&
-          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch || 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
+      actions: read
       contents: read
     outputs:
       artifact_id: ${{ steps.prepared.outputs.artifact-id }}
       base_sha: ${{ steps.prepare.outputs.base_sha }}
+      claimed: ${{ steps.claim.outputs.claimed }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
@@ -48,6 +79,10 @@ jobs:
         env:
           GOTOOLCHAIN: local
         run: go build -trimpath -o "$RUNNER_TEMP/docs-agent" ./cmd/docs-agent
+      - name: Identify the repository for the App token
+        id: repository
+        if: vars.AGENT_DOCS_APP_ID != ''
+        run: printf 'name=%s\n' "${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
       - name: Create read-only GitHub App token
         id: app-token
         if: vars.AGENT_DOCS_APP_ID != ''
@@ -59,7 +94,7 @@ jobs:
           app-id: ${{ vars.AGENT_DOCS_APP_ID }}
           private-key: ${{ secrets.AGENT_DOCS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
+          repositories: ${{ steps.repository.outputs.name }}
           permission-contents: read
           permission-issues: read
           permission-pull-requests: read
@@ -86,20 +121,49 @@ jobs:
         id: prepared
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: docs-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          name: docs-prepared-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.scheduled_basis != '' && format('-{0}', inputs.issue) || '' }}
           path: ${{ runner.temp }}/prepared/
           if-no-files-found: error
+      - name: Create a GitHub App claim token
+        id: claim-token
+        if: inputs.scheduled_basis != '' && inputs.apply && vars.AGENT_DOCS_APP_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        env:
+          INPUT_PERMISSION-VARIABLES: read
+        with:
+          app-id: ${{ vars.AGENT_DOCS_APP_ID }}
+          private-key: ${{ secrets.AGENT_DOCS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.repository.outputs.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: read
+          permission-organization-projects: read
+      - name: Claim the scheduled documentation basis
+        id: claim
+        if: inputs.scheduled_basis != '' && inputs.apply
+        env:
+          GITHUB_TOKEN: ${{ steps.claim-token.outputs.token || secrets.AGENT_DOCS_GITHUB_TOKEN }}
+          ACTIONS_READ_TOKEN: ${{ github.token }}
+          BASIS: ${{ inputs.scheduled_basis }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          report=$("$RUNNER_TEMP/docs-agent" claim --prepared "$RUNNER_TEMP/prepared" --basis "$BASIS" --actor "$ACTOR" --apply)
+          jq -r '"claimed=\(.claimed)"' <<< "$report" >> "$GITHUB_OUTPUT"
+          jq . <<< "$report"
       - name: Save the preparation log
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: docs-prepare-log-${{ github.run_id }}-${{ github.run_attempt }}
+          name: docs-prepare-log-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.scheduled_basis != '' && format('-{0}', inputs.issue) || '' }}
           path: ${{ runner.temp }}/prepare.log
           if-no-files-found: ignore
 
   work:
+    # Claim recovery uses this job name and the Run documentation work step.
+    name: "Work on documentation issue #${{ inputs.issue }}"
     needs: prepare
-    if: inputs.operation == 'run'
+    if: inputs.operation == 'run' && (inputs.scheduled_basis == '' || needs.prepare.outputs.claimed == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -187,7 +251,7 @@ jobs:
         if: steps.work.outputs.publishable == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: docs-result-${{ github.run_id }}-${{ github.run_attempt }}
+          name: docs-result-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.scheduled_basis != '' && format('-{0}', inputs.issue) || '' }}
           path: ${{ runner.temp }}/docs-handoff/
           if-no-files-found: error
           include-hidden-files: true
@@ -245,7 +309,7 @@ jobs:
         if: always() && steps.diagnostics.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: docs-work-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          name: docs-work-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.scheduled_basis != '' && format('-{0}', inputs.issue) || '' }}
           path: ${{ steps.diagnostics.outputs.path }}
           if-no-files-found: error
 
@@ -296,6 +360,10 @@ jobs:
         run: |
           "$RUNNER_TEMP/docs-agent" restore --prepared "$RUNNER_TEMP/prepared" --run "$RUNNER_TEMP/docs-handoff/work" \
             --source "$GITHUB_WORKSPACE/source" --workspace "$RUNNER_TEMP/docs-candidate"
+      - name: Identify the repository for the App token
+        id: repository
+        if: vars.AGENT_DOCS_APP_ID != ''
+        run: printf 'name=%s\n' "${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
       - name: Create GitHub App publication token
         id: app-token
         if: vars.AGENT_DOCS_APP_ID != ''
@@ -306,7 +374,7 @@ jobs:
           app-id: ${{ vars.AGENT_DOCS_APP_ID }}
           private-key: ${{ secrets.AGENT_DOCS_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
+          repositories: ${{ steps.repository.outputs.name }}
           permission-contents: ${{ inputs.apply && 'write' || 'read' }}
           permission-issues: ${{ inputs.apply && 'write' || 'read' }}
           permission-pull-requests: ${{ inputs.apply && 'write' || 'read' }}
@@ -327,7 +395,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: docs-publish-${{ github.run_id }}-${{ github.run_attempt }}
+          name: docs-publish-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.scheduled_basis != '' && format('-{0}', inputs.issue) || '' }}
           path: |
             ${{ runner.temp }}/publish.log
             ${{ runner.temp }}/docs-handoff/work/publication-journal.jsonl
