@@ -307,7 +307,7 @@ func Revalidate(ctx context.Context, c *Client, p Plan) (Current, error) {
 func RevalidateMerged(ctx context.Context, c *Client, p Plan, mergeSHA string) (Current, error) {
 	return revalidate(ctx, c, p, mergeSHA)
 }
-func revalidate(ctx context.Context, c *Client, p Plan, mergeSHA string) (Current, error) {
+func revalidate(ctx context.Context, c *Client, p Plan, ancestorSHA string) (Current, error) {
 	var current Current
 	if err := p.Validate(); err != nil {
 		return current, err
@@ -319,7 +319,10 @@ func revalidate(ctx context.Context, c *Client, p Plan, mergeSHA string) (Curren
 	if err := c.Request(ctx, "GET", fmt.Sprintf("/issues/%d", p.IssueNumber), nil, &issue); err != nil {
 		return current, err
 	}
-	if issue.NodeID != p.IssueNodeID || issue.Title != p.IssueTitle || Digest(issue.Body) != p.IssueBodyHash {
+	if issue.Number != p.IssueNumber || issue.NodeID != p.IssueNodeID || issue.PullRequest != nil {
+		return current, fmt.Errorf("issue identity changed")
+	}
+	if issue.Title != p.IssueTitle || Digest(issue.Body) != p.IssueBodyHash {
 		return current, fmt.Errorf("issue requirements changed")
 	}
 	current.IssueState = issue.State
@@ -342,7 +345,7 @@ func revalidate(ctx context.Context, c *Client, p Plan, mergeSHA string) (Curren
 		return current, err
 	}
 	current.BaseSHA = sha
-	if mergeSHA == "" {
+	if ancestorSHA == "" {
 		if sha != p.BaseSHA {
 			return current, fmt.Errorf("default branch changed; refresh documentation assessment")
 		}
@@ -350,11 +353,11 @@ func revalidate(ctx context.Context, c *Client, p Plan, mergeSHA string) (Curren
 		var compare struct {
 			Status string `json:"status"`
 		}
-		if err := c.Request(ctx, "GET", "/compare/"+url.PathEscape(mergeSHA)+"..."+url.PathEscape(sha), nil, &compare); err != nil {
+		if err := c.Request(ctx, "GET", "/compare/"+url.PathEscape(ancestorSHA)+"..."+url.PathEscape(sha), nil, &compare); err != nil {
 			return current, err
 		}
 		if compare.Status != "ahead" && compare.Status != "identical" {
-			return current, fmt.Errorf("documentation merge is not on the default branch")
+			return current, fmt.Errorf("commit %s is not on the default branch", ancestorSHA)
 		}
 	}
 	prs, _, ambiguous, err := c.linked(ctx, p.IssueNumber)

@@ -244,7 +244,7 @@ func (s *actionSession) currentEvent(ctx context.Context) (*Event, error) {
 		payload.Issue = s.issue
 	}
 	if s.cfg.EventName == "issues" && payload.Action == "edited" {
-		if payload.Issue.UpdatedAt != s.issue.UpdatedAt || payload.Issue.Title != s.issue.Title || !reflect.DeepEqual(payload.Issue.Body, s.issue.Body) {
+		if payload.Issue.ID != s.issue.ID || payload.Issue.Title != s.issue.Title || !reflect.DeepEqual(payload.Issue.Body, s.issue.Body) {
 			return nil, nil
 		}
 	}

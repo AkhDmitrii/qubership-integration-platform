@@ -1,6 +1,7 @@
 /**
  * Shown failing: recording the runner PID instead of the owner PID changed the saved record.
  * Shown failing: returning a null PID for a fresh preview broke the reuse assertion.
+ * Shown failing: dropping the checkout reservation left the test reservation in place.
  * Shown failing: skipping the owner liveness check let setup resolve after the owner exited.
  * Shown failing: skipping the command-line check let setup accept an unrelated process group.
  * Shown failing: allowing teardown to stop the owner's preview made the HTTP probe fail.
@@ -12,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test, expect } from "@playwright/test";
+import { BuildLock, BUNDLE_HOLDER } from "../../support/build-lock.js";
 import {
   groupAlive,
   RecordedServer,
@@ -29,11 +31,13 @@ const PATTERN = /e2e-ui-preview-fixture/;
 
 test.describe("campaign UI preview", () => {
   let directory: string;
+  let lock: BuildLock;
   let groups: number[];
   let previousOwner: string | undefined;
 
   test.beforeEach(() => {
     directory = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-ui-owner-"));
+    lock = new BuildLock(path.join(directory, "build.lock"));
     groups = [];
     previousOwner = process.env[UI_PREVIEW_OWNER_ENV];
     delete process.env[UI_PREVIEW_OWNER_ENV];
@@ -79,15 +83,22 @@ test.describe("campaign UI preview", () => {
   const recorded = (runner = process.pid) =>
     new RecordedServer(path.join(directory, "server.json"), PATTERN, runner);
 
+  function ensure(
+    state: RecordedServer,
+    answers: () => Promise<boolean>,
+    start?: () => Promise<number>,
+  ) {
+    return ensureUiServer(state, answers, async () => false, start, lock);
+  }
+
   test("a new preview belongs to the external operator", async () => {
     const operator = owner();
     process.env[UI_PREVIEW_OWNER_ENV] = String(operator);
     let running: Awaited<ReturnType<typeof preview>> | undefined;
     const state = recorded();
-    const result = await ensureUiServer(
+    const result = await ensure(
       state,
       async () => (running ? running.answers() : false),
-      async () => false,
       async () => {
         running = await preview();
         return running.pid;
@@ -106,16 +117,22 @@ test.describe("campaign UI preview", () => {
     const first = recorded();
     new RecordedServer(first.stateFile, PATTERN, operator).record(running.pid);
     process.env[UI_PREVIEW_OWNER_ENV] = String(operator);
+    expect(new BuildLock(lock.file, lock.runner).reserve(BUNDLE_HOLDER)).toBe(
+      true,
+    );
 
-    expect(
-      await ensureUiServer(first, running.answers, async () => false),
-    ).toEqual({ pid: running.pid, built: false });
+    expect(await ensure(first, running.answers)).toEqual({
+      pid: running.pid,
+      built: false,
+    });
+    expect(fs.existsSync(lock.file)).toBe(false);
     await stopUiServer(first);
     expect(await running.answers()).toBe(true);
     const second = recorded(process.ppid);
-    expect(
-      await ensureUiServer(second, running.answers, async () => false),
-    ).toEqual({ pid: running.pid, built: false });
+    expect(await ensure(second, running.answers)).toEqual({
+      pid: running.pid,
+      built: false,
+    });
     await stopUiServer(second);
     expect(readStateFile(first.stateFile)).toEqual({
       pid: running.pid,
@@ -134,7 +151,7 @@ test.describe("campaign UI preview", () => {
     new RecordedServer(state.stateFile, PATTERN, exited).record(running.pid);
     process.env[UI_PREVIEW_OWNER_ENV] = String(exited);
     await expect(
-      ensureUiServer(state, running.answers, async () => false),
+      ensure(state, running.answers),
     ).rejects.toThrow("live campaign owner");
     expect(groupAlive(running.pid)).toBe(true);
     expect(readStateFile(state.stateFile)).toEqual({
@@ -152,7 +169,7 @@ test.describe("campaign UI preview", () => {
     );
     process.env[UI_PREVIEW_OWNER_ENV] = String(operator);
     await expect(
-      ensureUiServer(state, unrelated.answers, async () => false),
+      ensure(state, unrelated.answers),
     ).rejects.toThrow("stale UI preview record");
     expect(groupAlive(unrelated.pid)).toBe(true);
     await releaseUiServer(operator, state);

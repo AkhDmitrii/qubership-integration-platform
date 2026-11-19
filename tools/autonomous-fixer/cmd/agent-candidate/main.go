@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentsignature"
@@ -24,6 +25,7 @@ func run(ctx context.Context, args []string) error {
 	output := fs.String("output", "", "New candidate file")
 	bundle := fs.String("bundle", "", "Candidate file")
 	digest := fs.String("expected-sha256", "", "Authorized artifact digest")
+	reportDigest := fs.String("expected-report-sha256", "", "Authorized author report digest")
 	repo := fs.String("repository", os.Getenv("GITHUB_REPOSITORY"), "Repository")
 	branch := fs.String("default-branch", "", "Default branch")
 	scope := fs.String("scope-paths", os.Getenv("AGENT_SCOPE_PATHS"), "Allowed paths")
@@ -58,6 +60,10 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		authorSummary, err := fixer.ReadPilotAuthorSummary(filepath.Join(filepath.Dir(*bundle), "report.json"), *reportDigest)
+		if err != nil {
+			return err
+		}
 		token := os.Getenv("AGENT_PUBLICATION_TOKEN")
 		if token == "" {
 			return fmt.Errorf("AGENT_PUBLICATION_TOKEN is required")
@@ -74,7 +80,7 @@ func run(ctx context.Context, args []string) error {
 			}
 			signature = &parsed
 		}
-		result, err := hc.Publish(ctx, api, c, hc.Options{Workspace: *workspace, Base: *base, Issue: *issue, Run: *id, Attempt: *attempt, Scope: fixer.ParseScopes(*scope), DefaultBranch: *branch, Repository: *repo, Signature: signature})
+		result, err := hc.Publish(ctx, api, c, hc.Options{Workspace: *workspace, Base: *base, Issue: *issue, Run: *id, Attempt: *attempt, Scope: fixer.ParseScopes(*scope), DefaultBranch: *branch, Repository: *repo, Signature: signature, AuthorSummary: authorSummary})
 		if err != nil {
 			return err
 		}

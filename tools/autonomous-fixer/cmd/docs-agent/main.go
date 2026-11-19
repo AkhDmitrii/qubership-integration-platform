@@ -199,7 +199,14 @@ func run(ctx context.Context, args []string) error {
 		if e = os.WriteFile(filepath.Join(*output, "task.md"), []byte(task), 0600); e != nil {
 			return e
 		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"plan_id": intake.Plan.ID, "base_sha": intake.Plan.BaseSHA, "complete": packet.Complete, "pages": len(packet.Documentation), "limitations": packet.Limitations})
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"plan_id":            intake.Plan.ID,
+			"base_sha":           intake.Plan.BaseSHA,
+			"complete":           packet.Complete,
+			"pages":              len(packet.Documentation),
+			"limitations":        packet.Limitations,
+			"publication_checks": doccycle.PublicationChecks(),
+		})
 	case "work":
 		if !filepath.IsAbs(*prepared) || !filepath.IsAbs(*source) || !filepath.IsAbs(*workspace) || !filepath.IsAbs(*output) {
 			return fmt.Errorf("work requires absolute prepared/source/workspace/output paths")

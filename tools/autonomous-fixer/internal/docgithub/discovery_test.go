@@ -222,6 +222,31 @@ func TestScheduledClaimDeduplicatesAndRecoversBeforeModelWork(t *testing.T) {
 	claim(501, true, "", 2)
 }
 
+func TestScheduleRecoversAfterCancellationBeforeRunnerAssignment(t *testing.T) {
+	c, api, plan := scheduleFixture(t)
+	const attemptPath = "/actions/runs/500/attempts/1"
+	api.attempts[attemptPath] = fixer.WorkflowRun{ID: 500, RunAttempt: 1, HeadRepository: fixer.Repository{FullName: c.Repository}, HeadBranch: "main", Event: "schedule", Path: scheduleWorkflow, Status: "completed", Conclusion: "cancelled"}
+	for _, tc := range []struct {
+		name   string
+		runner int64
+		steps  []any
+		want   string
+	}{
+		{name: "cancelled in queue", steps: []any{}},
+		{name: "incomplete record for assigned runner", runner: 42, steps: []any{}, want: "basis-already-attempted"},
+		{name: "missing steps", want: "basis-already-attempted"},
+		{name: "cancelled during model work", runner: 42, steps: []any{map[string]string{"name": "Run documentation work", "status": "completed", "conclusion": "cancelled"}}, want: "basis-already-attempted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api.jobs[attemptPath] = []any{map[string]any{"name": "Work on documentation issue #1", "status": "completed", "conclusion": "cancelled", "runner_id": tc.runner, "steps": tc.steps}}
+			got, err := previousScheduleWork(t.Context(), c.API, c.Repository, plan.IssueNumber, ScheduledAttempt{RunID: 500, Attempt: 1})
+			if err != nil || got != tc.want {
+				t.Fatalf("prior work = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestScheduledClaimRevalidatesIssueBeforeWriting(t *testing.T) {
 	c, a, plan := scheduleFixture(t)
 	a.project = "DONE"

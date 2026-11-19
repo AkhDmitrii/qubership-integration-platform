@@ -243,12 +243,13 @@ export async function ensureUiServer(
   portAnswers: () => Promise<boolean> = () => answers(UI_PORT),
   stale: () => Promise<boolean> = bundleIsStale,
   start: () => number | Promise<number> = startPreview,
+  lock = new BuildLock(),
 ): Promise<{ pid: number | null; built: boolean }> {
   try {
-    return await serveBundle(recorded, portAnswers, stale, start);
+    return await serveBundle(recorded, portAnswers, stale, start, lock);
   } finally {
     // A setup that built nothing lets the `vscode-server` builds go.
-    new BuildLock().dropReservation(BUNDLE_HOLDER);
+    lock.dropReservation(BUNDLE_HOLDER);
   }
 }
 
@@ -257,6 +258,7 @@ async function serveBundle(
   portAnswers: () => Promise<boolean>,
   stale: () => Promise<boolean>,
   start: () => number | Promise<number>,
+  lock: BuildLock,
 ): Promise<{ pid: number | null; built: boolean }> {
   const externalOwner = campaignOwner();
   const managed =
@@ -294,13 +296,11 @@ async function serveBundle(
   }
   const built = await stale();
   if (built) {
-    await new BuildLock()
-      .run(BUNDLE_HOLDER, buildBundle)
-      .catch((cause: unknown) => {
-        throw new Error(
-          `nothing answers on port ${UI_PORT}: the UI bundle did not build. ${String(cause)}`,
-        );
-      });
+    await lock.run(BUNDLE_HOLDER, buildBundle).catch((cause: unknown) => {
+      throw new Error(
+        `nothing answers on port ${UI_PORT}: the UI bundle did not build. ${String(cause)}`,
+      );
+    });
   }
   const pid = await start();
   managed.record(pid);

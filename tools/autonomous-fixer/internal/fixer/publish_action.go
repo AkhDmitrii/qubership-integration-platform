@@ -172,6 +172,7 @@ func (s *actionSession) publishAction(ctx context.Context, operation string, out
 	output.Outputs["artifact_name"] = name
 	output.Outputs["base_sha"] = state.Contract.BaseSHA
 	output.Outputs["candidate_sha256"] = candidate.CandidateSHA256
+	output.Outputs["report_sha256"] = candidate.ReportSHA256
 	output.Outputs["default_branch"] = s.repo.DefaultBranch
 	output.Outputs["run_id"] = runID
 	output.Outputs["run_attempt"] = attempt

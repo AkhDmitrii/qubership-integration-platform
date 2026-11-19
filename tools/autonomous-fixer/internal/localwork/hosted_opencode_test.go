@@ -45,7 +45,7 @@ case "$OPENCODE_CONFIG_CONTENT" in
 esac
 mkdir -p "$XDG_DATA_HOME"
 printf '%s' "$OPENCODE_CONFIG_CONTENT" > "$XDG_DATA_HOME/native-config.json"
-printf '%s\n' '{"type":"text","sessionID":"fixture","part":{"type":"text","messageID":"message","text":"Checked the patch. Sensitive marker fixture-secret.\nOutcome: fixed"}}'
+printf '%s\n' '{"type":"text","sessionID":"fixture","part":{"type":"text","messageID":"message","text":"Checked the patch. Sensitive marker fixture-secret.\n\nPR title: fix(schemas): Preserve boolean defaults\n## Why\nImporting a chain dropped its false default.\n## What\nThe import preserves explicit false defaults.\n## How to verify\nCommand: npm test\nThe schema regression test passed.\nEnd-to-end decision: The module test exercises the importer.\n## For the reviewer\n\nOutcome: fixed"}}'
 `
 	if err := os.WriteFile(cfg.RuntimeBinary, []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -74,7 +74,9 @@ printf '%s\n' '{"type":"text","sessionID":"fixture","part":{"type":"text","messa
 	}
 	prompt, err := os.ReadFile(filepath.Join(dir, "prompt.txt"))
 	if err != nil || !strings.Contains(string(prompt), "native OpenCode qip-reviewer subagent") ||
-		strings.Contains(string(prompt), "Codex's native subagents") || !strings.Contains(string(prompt), "E2E_PROVISION=auto") {
+		strings.Contains(string(prompt), "Codex's native subagents") || !strings.Contains(string(prompt), "E2E_PROVISION=auto") ||
+		!strings.Contains(string(prompt), "## How to verify") || !strings.Contains(string(prompt), "End-to-end decision:") ||
+		!strings.Contains(report.Summary, "End-to-end decision: The module test exercises the importer.") {
 		t.Fatal(string(prompt), err)
 	}
 	for _, path := range []string{filepath.Join(dir, "response-raw.txt"), filepath.Join(cfg.OutputDirectory, "report.json")} {

@@ -211,6 +211,9 @@ func Transition(previous *State, event Event, context TransitionContext) (Result
 		if !nonempty(event.Requirements) {
 			return reject("Requirements must not be empty.")
 		}
+		if s.Contract.matchesRequirements(event.Requirements) {
+			return reject("Requirements already match the contract.")
+		}
 		s.Contract.Version++
 		s.Contract.Requirements = ""
 		s.Contract.RequirementsSHA256 = requirementsSHA256(event.Requirements)

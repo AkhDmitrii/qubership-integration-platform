@@ -67,6 +67,15 @@ func (p *publisher) revalidate(ctx context.Context, mergeSHA string) (Current, e
 	if mergeSHA != "" {
 		return RevalidateMerged(ctx, p.client, p.plan, mergeSHA)
 	}
+	state := p.state
+	if state.Decision == "no_change" && (state.Status == "completed" || state.CloseAttempted || state.ProjectDoneAttempted ||
+		(state.Status == "completing" && state.InitialIssueState == "closed")) {
+		current, err := revalidate(ctx, p.client, p.plan, p.plan.BaseSHA)
+		if err == nil && current.IssueState != "closed" {
+			return current, fmt.Errorf("issue was reopened or a prior close is unresolved")
+		}
+		return current, err
+	}
 	return Revalidate(ctx, p.client, p.plan)
 }
 func (p *publisher) complete(ctx context.Context, mergeSHA string) error {
@@ -123,6 +132,9 @@ func (p *publisher) complete(ctx context.Context, mergeSHA string) error {
 	} else if !p.state.ProjectDoneAttempted && !p.state.CloseAttempted && p.state.Status != "completed" {
 		return fmt.Errorf("project completion was not requested by this task")
 	}
+	if current.IssueState != "closed" {
+		return fmt.Errorf("issue was reopened during project completion")
+	}
 	if p.state.Status == "completed" {
 		return nil
 	}
@@ -164,11 +176,11 @@ func reconcile(ctx context.Context, c *Client, plan Plan, apply bool, merge *doc
 			return p.state, fmt.Errorf("documentation PR publication is incomplete; recover the validated work artifacts")
 		}
 		if p.state.Status == "completed" {
-			current, err := RevalidateMerged(ctx, c, plan, plan.BaseSHA)
+			current, err := p.revalidate(ctx, "")
 			if err != nil {
 				return p.state, err
 			}
-			if current.IssueState != "closed" || current.ProjectStatus != plan.Project.DoneOptionID {
+			if current.ProjectStatus != plan.Project.DoneOptionID {
 				return p.state, fmt.Errorf("completed documentation task was reopened or moved")
 			}
 			return p.state, nil

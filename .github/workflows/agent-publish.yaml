@@ -106,6 +106,7 @@ jobs:
           AGENT_RESULT_SIGNATURE: ${{ steps.authorize.outputs.result_signature }}
           BASE_SHA: ${{ steps.authorize.outputs.base_sha }}
           CANDIDATE_SHA256: ${{ steps.authorize.outputs.candidate_sha256 }}
+          REPORT_SHA256: ${{ steps.authorize.outputs.report_sha256 }}
           DEFAULT_BRANCH: ${{ steps.authorize.outputs.default_branch }}
           SCOPE_PATHS: ${{ steps.authorize.outputs.scope_paths }}
           WORKER_RUN_ID: ${{ steps.authorize.outputs.run_id }}
@@ -113,7 +114,8 @@ jobs:
         run: |
           "$RUNNER_TEMP/agent-candidate" publish --workspace "$GITHUB_WORKSPACE" \
             --bundle "$AGENT_PILOT_ARTIFACT_DIR/candidate.json" --base "$BASE_SHA" \
-            --expected-sha256 "$CANDIDATE_SHA256" --repository "$GITHUB_REPOSITORY" \
+            --expected-sha256 "$CANDIDATE_SHA256" --expected-report-sha256 "$REPORT_SHA256" \
+            --repository "$GITHUB_REPOSITORY" \
             --issue "$INPUT_ISSUE" --run "$WORKER_RUN_ID" --attempt "$WORKER_ATTEMPT" \
             --default-branch "$DEFAULT_BRANCH" --scope-paths "$SCOPE_PATHS" > "$AGENT_PILOT_PUBLICATION_PATH"
       - name: Record the draft pull request

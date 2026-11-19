@@ -130,30 +130,51 @@ func ReadPilotFile(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
+type pilotAuthorReport struct {
+	Workflow string `json:"workflow"`
+	Status   string `json:"status"`
+	Summary  string `json:"summary"`
+	Error    string `json:"error"`
+}
+
+func readPilotAuthorReport(path string) (pilotAuthorReport, string, error) {
+	var result pilotAuthorReport
+	report, err := ReadPilotFile(path, maxPilotReportBytes)
+	if err != nil {
+		return result, "", err
+	}
+	if err := json.Unmarshal(report, &result); err != nil {
+		return result, "", err
+	}
+	if result.Workflow != "fix-issue" || !contains([]string{"author-reported-fixed", "needs-human", "blocked"}, result.Status) || strings.TrimSpace(result.Summary) == "" || result.Error != "" {
+		return result, "", fmt.Errorf("the worker report has no usable author outcome")
+	}
+	hash := sha256.Sum256(report)
+	return result, hex.EncodeToString(hash[:]), nil
+}
+
+func ReadPilotAuthorSummary(path, expectedDigest string) (string, error) {
+	report, digest, err := readPilotAuthorReport(path)
+	if err != nil {
+		return "", err
+	}
+	if digest != expectedDigest || report.Status != "author-reported-fixed" {
+		return "", fmt.Errorf("the author report differs from the authorized fixed result")
+	}
+	return report.Summary, nil
+}
+
 func SealPilotResult(checkpoint Checkpoint, dir string) (PilotResult, error) {
 	sealed := PilotResult{Checkpoint: checkpoint}
 	if checkpoint.Mode != "pilot" || checkpoint.SchemaVersion != SchemaVersion || !commitPattern.MatchString(checkpoint.Contract.BaseSHA) {
 		return sealed, fmt.Errorf("a pilot checkpoint is required")
 	}
-	report, err := ReadPilotFile(filepath.Join(dir, "report.json"), maxPilotReportBytes)
+	result, digest, err := readPilotAuthorReport(filepath.Join(dir, "report.json"))
 	if err != nil {
 		return sealed, err
 	}
-	var result struct {
-		Workflow string `json:"workflow"`
-		Status   string `json:"status"`
-		Summary  string `json:"summary"`
-		Error    string `json:"error"`
-	}
-	if err := json.Unmarshal(report, &result); err != nil {
-		return sealed, err
-	}
-	if result.Workflow != "fix-issue" || !contains([]string{"author-reported-fixed", "needs-human", "blocked"}, result.Status) || strings.TrimSpace(result.Summary) == "" || result.Error != "" {
-		return sealed, fmt.Errorf("the worker report has no usable author outcome")
-	}
 	sealed.Outcome, sealed.Summary = result.Status, result.Summary
-	hash := sha256.Sum256(report)
-	sealed.ReportSHA256 = hex.EncodeToString(hash[:])
+	sealed.ReportSHA256 = digest
 	if result.Status == "author-reported-fixed" {
 		data, err := ReadPilotFile(filepath.Join(dir, "candidate.json"), MaxPilotCandidateBytes)
 		if err != nil {
@@ -176,7 +197,7 @@ func SealPilotResult(checkpoint Checkpoint, dir string) (PilotResult, error) {
 		if len(CheckPaths(paths, checkpoint.Contract.ScopePaths, false)) != 0 {
 			return sealed, fmt.Errorf("the pilot candidate changes paths outside the approved scope")
 		}
-		hash = sha256.Sum256(data)
+		hash := sha256.Sum256(data)
 		sealed.CandidateSHA256 = hex.EncodeToString(hash[:])
 	}
 	return sealed, nil

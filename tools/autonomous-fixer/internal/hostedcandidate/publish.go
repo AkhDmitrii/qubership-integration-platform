@@ -23,6 +23,7 @@ type Options struct {
 	Issue, Run, Attempt                        int64
 	Scope                                      []string
 	Signature                                  *agentsignature.Signature
+	AuthorSummary                              string
 }
 type Published struct {
 	Number int64  `json:"number"`
@@ -233,11 +234,8 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 		if _, err = eligible(ctx, api, o); err != nil {
 			return out, err
 		}
-		title = strings.Join(strings.Fields(title), " ")
-		if len([]rune(title)) > 90 {
-			title = string([]rune(title)[:90])
-		}
-		body := fmt.Sprintf("Closes #%d\n\n[Author report and evidence](https://github.com/%s/actions/runs/%d/attempts/%d)", o.Issue, o.Repository, o.Run, o.Attempt)
+		title, body := draftFromAuthor(o.AuthorSummary, title)
+		body += fmt.Sprintf("\n\n---\n\nCloses #%d\n\n[Author report and evidence](https://github.com/%s/actions/runs/%d/attempts/%d)", o.Issue, o.Repository, o.Run, o.Attempt)
 		if parent != o.Base {
 			body += fmt.Sprintf("\n\nProduct validated at `%s`. Publication includes controller updates through `%s`.", o.Base, parent)
 		}
@@ -245,7 +243,7 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 		if o.Signature != nil {
 			body = o.Signature.Append(body)
 		}
-		createErr := api.Request(ctx, "POST", "/pulls", map[string]any{"title": "fix: " + title, "head": branch, "base": o.DefaultBranch, "draft": true, "body": body}, nil)
+		createErr := api.Request(ctx, "POST", "/pulls", map[string]any{"title": title, "head": branch, "base": o.DefaultBranch, "draft": true, "body": body}, nil)
 		prs, err = api.List(ctx, query, "")
 		if err != nil || len(prs) == 0 {
 			return out, errors.Join(createErr, err, fmt.Errorf("draft PR creation could not be confirmed"))

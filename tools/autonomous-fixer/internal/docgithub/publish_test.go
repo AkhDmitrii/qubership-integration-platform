@@ -26,6 +26,7 @@ type publicationAPI struct {
 	plan                                             Plan
 	state, project, head, branch                     string
 	mergeSHA, mergeHead                              string
+	implementationSHA                                string
 	comments                                         []issueComment
 	pr                                               *pullRequest
 	commentCreates, prCreates, closeCalls, doneCalls int
@@ -92,7 +93,11 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 			pr := map[string]any{"number": a.pr.Number, "merged": a.pr.Merged, "headRefOid": head, "baseRefName": a.pr.Base.Ref, "mergeCommit": map[string]string{"oid": a.mergeSHA}}
 			write(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": pr}}})
 		case strings.Contains(request.Query, "timelineItems"):
-			pr := map[string]any{"number": 2, "merged": true, "baseRefName": "main", "repository": map[string]string{"nameWithOwner": "org/repo"}, "mergeCommit": map[string]string{"oid": a.plan.BaseSHA}, "closingIssuesReferences": map[string]any{"nodes": []any{map[string]int{"number": 1}}, "pageInfo": map[string]bool{"hasNextPage": false}}}
+			mergeSHA := a.implementationSHA
+			if mergeSHA == "" {
+				mergeSHA = a.plan.BaseSHA
+			}
+			pr := map[string]any{"number": 2, "merged": true, "baseRefName": "main", "repository": map[string]string{"nameWithOwner": "org/repo"}, "mergeCommit": map[string]string{"oid": mergeSHA}, "closingIssuesReferences": map[string]any{"nodes": []any{map[string]int{"number": 1}}, "pageInfo": map[string]bool{"hasNextPage": false}}}
 			write(map[string]any{"data": map[string]any{"repository": map[string]any{"issue": map[string]any{"timelineItems": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"closer": pr}}}}}}})
 		default:
 			fail()
@@ -239,7 +244,7 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 		write(a.pr)
 	case path == "/pulls/3":
 		write(a.pr)
-	case strings.HasPrefix(path, "/compare/"+strings.Repeat("d", 40)+"..."):
+	case strings.HasPrefix(path, "/compare/"+strings.Repeat("d", 40)+"..."), strings.HasPrefix(path, "/compare/"+a.plan.BaseSHA+"..."):
 		write(map[string]string{"status": a.headComparison})
 	case strings.HasPrefix(path, "/compare/"):
 		write(map[string]string{"status": "ahead"})
@@ -359,6 +364,7 @@ func TestReconcileAfterFailedProjectReadback(t *testing.T) {
 				t.Fatalf("expected the first project read after the write to fail: %v", err)
 			}
 			api.projectFailure = ""
+			api.head = strings.Repeat("e", 40)
 			result, err := Reconcile(ctx, c, plan, options)
 			if result.Status != test.wantStatus || (err == nil) != (test.wantStatus == "completed") || api.doneCalls != test.wantUpdates {
 				t.Fatalf("status=%s, project updates=%d, error=%v", result.Status, api.doneCalls, err)
@@ -418,12 +424,78 @@ func TestReconcilePreservesManualReopenAfterRejectedProjectCompletion(t *testing
 	if _, err := Publish(ctx, c, plan, run, options); err == nil || api.state != "closed" {
 		t.Fatalf("expected issue to close before the rejected project update: state=%s, error=%v", api.state, err)
 	}
-	api.state, api.projectFailure = "open", ""
-	if _, err := Reconcile(ctx, c, plan, options); err == nil {
+	api.state, api.projectFailure, api.head = "open", "", strings.Repeat("e", 40)
+	if _, err := Reconcile(ctx, c, plan, options); err == nil || !strings.Contains(err.Error(), "reopened") {
 		t.Fatal("reconciliation accepted a manually reopened issue")
 	}
 	if api.closeCalls != 1 || api.doneCalls != 1 || api.state != "open" {
 		t.Fatalf("close=%d, project updates=%d, state=%s", api.closeCalls, api.doneCalls, api.state)
+	}
+}
+
+func TestReconcileNoChangeRequiresCurrentMainBeforeClose(t *testing.T) {
+	ctx := context.Background()
+	plan, run, _ := publicationFixture(t, false)
+	plan.IssueState = "open"
+	plan.ID = ""
+	plan.ID = Digest(plan)
+	c, api := apiFixture(t, plan)
+	api.state, api.closeFailure = "open", http.StatusForbidden
+	options := PublishOptions{Actor: "alice", Apply: true}
+	if _, err := Publish(ctx, c, plan, run, options); err == nil || api.state != "open" {
+		t.Fatalf("expected GitHub to reject the close: state=%s, error=%v", api.state, err)
+	}
+	api.closeFailure, api.head = 0, strings.Repeat("e", 40)
+	if _, err := Reconcile(ctx, c, plan, options); err == nil || !strings.Contains(err.Error(), "default branch changed") {
+		t.Fatalf("expected a fresh documentation assessment: %v", err)
+	}
+	if api.state != "open" || api.closeCalls != 1 || api.doneCalls != 0 {
+		t.Fatalf("state=%s, close=%d, project updates=%d", api.state, api.closeCalls, api.doneCalls)
+	}
+}
+
+func TestReconcileNoChangeAfterMainAdvances(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		change    func(*publicationAPI)
+		wantError string
+	}{
+		{name: "unrelated commit"},
+		{name: "rewritten main", change: func(a *publicationAPI) { a.headComparison = "diverged" }, wantError: "is not on the default branch"},
+		{name: "edited requirements", change: func(a *publicationAPI) { a.plan.IssueTitle += " (updated)" }, wantError: "issue requirements changed"},
+		{name: "changed implementation", change: func(a *publicationAPI) { a.implementationSHA = strings.Repeat("f", 40) }, wantError: "implementing pull requests changed"},
+		{name: "moved project item", change: func(a *publicationAPI) { a.project = "OTHER" }, wantError: "issue moved out of documentation review"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			plan, run, _ := publicationFixture(t, false)
+			plan.IssueState = "open"
+			plan.ID = ""
+			plan.ID = Digest(plan)
+			c, api := apiFixture(t, plan)
+			api.state, api.projectFailure = "open", projectPermissionDenied
+			options := PublishOptions{Actor: "alice", Apply: true}
+			if _, err := Publish(ctx, c, plan, run, options); err == nil || api.state != "closed" {
+				t.Fatalf("expected the issue to close before the rejected project update: state=%s, error=%v", api.state, err)
+			}
+			api.head, api.projectFailure = strings.Repeat("e", 40), ""
+			if test.change != nil {
+				test.change(api)
+			}
+			result, err := Reconcile(ctx, c, plan, options)
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) || api.doneCalls != 1 {
+					t.Fatalf("expected %q without a project write: %+v, error=%v, writes=%d", test.wantError, result, err, api.doneCalls)
+				}
+				return
+			}
+			if err != nil || result.Status != "completed" || api.closeCalls != 1 || api.doneCalls != 2 || api.commentCreates != 1 || api.project != "DONE" {
+				t.Fatalf("reconciliation did not complete the existing publication: %+v, error=%v, close=%d, project updates=%d, comments=%d", result, err, api.closeCalls, api.doneCalls, api.commentCreates)
+			}
+			if result, err = Publish(ctx, c, plan, run, options); err != nil || result.Status != "completed" || api.closeCalls != 1 || api.doneCalls != 2 || api.commentCreates != 1 {
+				t.Fatalf("publication retry changed the completed task: %+v, error=%v", result, err)
+			}
+		})
 	}
 }
 

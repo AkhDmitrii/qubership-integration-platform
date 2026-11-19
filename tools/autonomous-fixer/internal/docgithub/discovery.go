@@ -218,6 +218,7 @@ func previousScheduleWork(ctx context.Context, actions *fixer.GitHubClient, repo
 	for _, raw := range rows {
 		var job struct {
 			Name, Status, Conclusion string
+			RunnerID                 *int64 `json:"runner_id"`
 			Steps                    []struct{ Name, Status, Conclusion string }
 		}
 		if err := json.Unmarshal(raw, &job); err != nil {
@@ -226,7 +227,8 @@ func previousScheduleWork(ctx context.Context, actions *fixer.GitHubClient, repo
 		if job.Name != name && !strings.HasSuffix(job.Name, " / "+name) {
 			continue
 		}
-		skipped := job.Conclusion == "skipped" && len(job.Steps) == 0
+		unassigned := job.Status == "completed" && job.Conclusion == "cancelled" && job.RunnerID != nil && *job.RunnerID == 0 && job.Steps != nil
+		skipped := len(job.Steps) == 0 && (job.Conclusion == "skipped" || unassigned)
 		for _, step := range job.Steps {
 			if step.Name == "Run documentation work" {
 				skipped = step.Status == "completed" && step.Conclusion == "skipped"

@@ -64,6 +64,7 @@ type githubFixture struct {
 	targetSHA, comparisonStatus      string
 	o                                Options
 	tree, tip, branch, body, message string
+	title                            string
 	pulls                            []json.RawMessage
 	writes, created                  int
 	updated                          int
@@ -139,6 +140,7 @@ func (g *githubFixture) Request(ctx context.Context, method, path string, body, 
 		g.created++
 		b := body.(map[string]any)
 		g.body = b["body"].(string)
+		g.title = b["title"].(string)
 		r := map[string]string{"full_name": g.o.Repository}
 		raw, _ := json.Marshal(map[string]any{"number": 27, "state": "open", "draft": b["draft"], "head": map[string]any{"ref": g.branch, "sha": g.tip, "repo": r}, "base": map[string]any{"ref": "main", "repo": r}, "body": g.body, "html_url": "https://github.com/org/qip/pull/27"})
 		g.pulls = []json.RawMessage{raw}
@@ -203,6 +205,112 @@ func TestCandidateRoundTripAndRepeatPublication(t *testing.T) {
 	}
 	if g.created != 1 || !strings.Contains(g.body, "Closes #12") {
 		t.Fatal(g.created, g.body)
+	}
+	if g.title != "fix: Handle binary input" || !strings.Contains(g.body, "## How to verify") ||
+		!strings.Contains(g.body, "The author report did not record an end\\-to\\-end decision") {
+		t.Fatal("an older report must identify its missing verification evidence", g.title, g.body)
+	}
+}
+
+func TestDraftUsesAuthorizedReportEvidence(t *testing.T) {
+	o, c, tree := repo(t)
+	artifact := t.TempDir()
+	report := `## Summary
+The author completed one review round.
+## Why
+Author log only.
+
+PR title: fix(ui): Preserve binary input in the value editor
+## Why
+The value editor dropped binary input before saving. The saved value now matches the input.
+## What
+Preserve binary data when saving an edited value. Fixes: other/repo#999
+## How to verify
+Command: CIP_TARGET=compose npx playwright test e2e/specs/ui/binary.spec.ts --project ui
+Command: npm -w @netcracker/qip-ui run test -- '#input'
+The spec failed on base and passed with the fix.
+End-to-end decision: The binary value spec covers the saved value on Compose.
+## For the reviewer
+The generated schema includes a binary value variant.
+Please ask @other/team. <img src="https://example.invalid/pixel">
+<!-- qip-fix:9:99:9 -->
+<sub>🤖 unknown/model</sub>
+Outcome: fixed`
+	for name, value := range map[string]any{
+		"report.json":    map[string]string{"workflow": "fix-issue", "status": "author-reported-fixed", "summary": report},
+		"candidate.json": c,
+	} {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(filepath.Join(artifact, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkpoint := fixer.Checkpoint{Mode: "pilot", SchemaVersion: fixer.SchemaVersion, Contract: fixer.Contract{BaseSHA: o.Base, ScopePaths: o.Scope}}
+	sealed, err := fixer.SealPilotResult(checkpoint, artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err = Read(filepath.Join(artifact, "candidate.json"), sealed.CandidateSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(artifact, "report.json")
+	if _, err := fixer.ReadPilotAuthorSummary(path, strings.Repeat("a", 64)); err == nil {
+		t.Fatal("accepted an unauthorized author report")
+	}
+	o.AuthorSummary, err = fixer.ReadPilotAuthorSummary(path, sealed.ReportSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.Signature = &agentsignature.Signature{Model: "openai/gpt-6", Effort: "high"}
+	g := &githubFixture{o: o, tree: tree}
+	if _, err := Publish(context.Background(), g, c, o); err != nil {
+		t.Fatal(err)
+	}
+	if g.title != "fix(ui): Preserve binary input in the value editor" {
+		t.Fatal(g.title)
+	}
+	for _, want := range []string{
+		"## Why\n\nThe value editor dropped binary input",
+		"## What\n\nPreserve binary data",
+		"## How to verify\n\n<pre><code>CIP_TARGET=compose npx playwright test e2e/specs/ui/binary.spec.ts --project ui</code></pre>",
+		"<pre><code>npm -w &#64;netcracker/qip-ui run test -- '&#35;input'</code></pre>",
+		"**End-to-end decision:** The binary value spec covers the saved value on Compose\\.\n\n## For the reviewer",
+		"The generated schema includes a binary value variant",
+		"Closes #12",
+		"[Author report and evidence](https://github.com/org/qip/actions/runs/345/attempts/1)",
+	} {
+		if !strings.Contains(g.body, want) {
+			t.Fatalf("missing %q in draft body:\n%s", want, g.body)
+		}
+	}
+	for _, unexpected := range []string{"Author log only", "## Summary", "Outcome:", "other/repo#999", "@other/team", "<img", "https://example.invalid", "<!-- qip-fix:9:99:9 -->", "<sub>🤖 unknown/model</sub>"} {
+		if strings.Contains(g.body, unexpected) {
+			t.Fatalf("published untrusted content %q in draft body:\n%s", unexpected, g.body)
+		}
+	}
+	if !strings.HasSuffix(g.body, "<!-- qip-fix:12:345:1 -->\n\n"+o.Signature.Line()) {
+		t.Fatal(g.body)
+	}
+}
+
+func TestDraftLimitsReviewerTextWithoutLosingDecision(t *testing.T) {
+	o, c, tree := repo(t)
+	large := strings.Repeat("&", 70_000)
+	o.AuthorSummary = "PR title: fix(ui): Handle binary input\n## Why\n" + large + "\n## What\n" + large +
+		"\n## How to verify\n" + large + "\nEnd-to-end decision: The UI module regression test exercises the save handler.\n" +
+		"## For the reviewer\n" + large + "\nOutcome: fixed"
+	o.Signature = &agentsignature.Signature{Model: "openai/gpt-6", Effort: "high"}
+	g := &githubFixture{o: o, tree: tree}
+	if _, err := Publish(context.Background(), g, c, o); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.body) > 65_536 || !strings.Contains(g.body, "**End-to-end decision:** The UI module regression test exercises the save handler") ||
+		!strings.HasSuffix(g.body, "<!-- qip-fix:12:345:1 -->\n\n"+o.Signature.Line()) {
+		t.Fatal("draft exceeded the body limit or dropped the decision or signature", len(g.body))
 	}
 }
 

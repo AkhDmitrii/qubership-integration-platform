@@ -14,7 +14,15 @@ Engineering runs skip Jev, including runs with archived engineering_triage setti
 
 The documentation pipeline has a separate lifecycle because an issue in `In doc review` may already be closed. `cmd/docs-agent` provides read-only GitHub preparation, automatic help/source retrieval, the local three-branch worker, validated publication, and merge reconciliation. `cmd/docs-feedback` records observations and explicit human/model judgments without treating agreement as ground truth.
 
-`agent-docs.yaml` is a manual opt-in workflow for preparation and merge reconciliation without model calls. Model work and initial publication run through the local CLI during the pilot. It supports a GitHub App or a dedicated PAT. CLI publication and hosted reconciliation default to a dry run. No-change completion writes a comment, closes the issue only if still open, and updates the project after readback. A documentation candidate becomes a draft PR; completion waits for merge. The repository's linked-issue check accepts `Related #N` only for a verified publisher, state, branch and documentation-only diff.
+`agent-docs.yaml` supports three operations:
+
+| Operation | Model usage | GitHub changes |
+| --- | --- | --- |
+| `prepare` | None | Reads the issue and merged PRs and saves the evidence packet in Actions. |
+| `run` | Calls Jev when the evidence permits classification. OpenCode handles assessment or writing when needed. OpenRouter bills these calls even in a dry run. | With **Apply** enabled, publishes a draft help PR or records a no-change decision, closes the issue if open, and moves its project item to **Done**. |
+| `reconcile` | None | Inspects a previous publication. With **Apply** enabled, finishes an eligible publication using its recorded GitHub state. |
+
+Manual runs default to a dry run. The documentation queue can also start work daily or in response to `/agent docs`. Merging a verified documentation PR triggers reconciliation. The workflows use a GitHub App or a dedicated PAT.
 
 See [Documentation GitHub setup](DOCS-GITHUB.md), [documentation lifecycle](DOCUMENTATION-CYCLE.md), and [Jev routing](JEV.md). The engineering pilot has separate settings and credentials.
 

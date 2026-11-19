@@ -278,12 +278,9 @@ func Publish(ctx context.Context, c *Client, plan Plan, runDir string, options P
 	p.state.CandidateDigest = candidate.Digest
 	p.state.Decision = candidate.Report.Documentation.Decision
 	p.state.IssueComment = agentsignature.Strip(candidate.Report.Documentation.IssueComment)
-	current, e := Revalidate(ctx, c, plan)
-	if e != nil {
-		return p.state, e
-	}
 	if !options.Apply {
-		return p.state, nil
+		_, e = Revalidate(ctx, c, plan)
+		return p.state, e
 	}
 	if e = Authorize(ctx, c, options.Actor); e != nil {
 		return p.state, e
@@ -294,6 +291,10 @@ func Publish(ctx context.Context, c *Client, plan Plan, runDir string, options P
 	}
 	if found && (p.state.CandidateDigest != candidate.Digest || p.state.Decision != candidate.Report.Documentation.Decision) {
 		return p.state, fmt.Errorf("publication state refers to a different candidate")
+	}
+	current, e := p.revalidate(ctx, "")
+	if e != nil {
+		return p.state, e
 	}
 	if current.ProjectStatus == plan.Project.DoneOptionID {
 		if found && p.state.Status == "completed" && current.IssueState == "closed" {

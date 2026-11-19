@@ -18,9 +18,25 @@ func (d *Driver) nativeAuthorPrompt(evidence string) string {
 	reviewer := d.Config.ReviewProfile
 	reviewAssignment := fmt.Sprintf("Use Codex's native subagents for the review with model %s and %s reasoning effort.", reviewer.Model, reviewer.Effort)
 	productCheck := ""
+	draft := ""
 	if d.Config.Hosted {
 		reviewAssignment = "Use the native OpenCode " + experimentruntime.HostedOpenCodeReviewer + " subagent with its configured model and variant."
 		productCheck = "The hosted stack is preprovisioned. Set E2E_PROVISION=auto for the first product check after changing a deployed backend or chart. Use the default E2E_PROVISION=never for subsequent checks.\n"
+		draft = `
+If you fixed the issue, read the change-description-authoring and english-developer-style skills. Finish your report with the following draft for the maintainer, immediately before the outcome line. Use these headings and labels. Use plain text or bulleted lists. The controller adds the issue link, evidence link, and signature.
+
+PR title: fix(<module>): <symptom in the reporter's words>
+## Why
+Name the product path, symptom, and relevant before and after evidence.
+## What
+Explain the change in behavior and the reason for the approach.
+## How to verify
+Give the reviewer the commands or steps and the results you observed. Refer to retained evidence where useful.
+Put each literal command on its own line starting with "Command: ".
+End-to-end decision: Name the regression test, target, command from this section, and observed results before and after the fix. If no end-to-end case is needed, name the reason in AGENTS.md and explain why it applies to this change.
+## For the reviewer
+Name any generated contract change, changed test expectation, or decision the maintainer must review. Leave this section empty if there is nothing to flag.
+`
 	}
 	var requirements strings.Builder
 	for _, criterion := range d.Request.RequiredCriteria {
@@ -52,7 +68,7 @@ The supplied task and worktree replace GitHub intake and worktree creation. Use 
 Keep the patch in this worktree and save useful evidence under %q. This local run ends with a report. Do not commit, push, publish, write to GitHub, or remove the worktree.
 
 Report what you changed, what you observed, and any unresolved blockers in ordinary prose. End with one line: Outcome: fixed, Outcome: needs-human, or Outcome: blocked. Use fixed when the applicable verification and review are complete.
-`, nativeFixIssueSkill, filepath.Join(d.Config.TaskDirectory, "task.md"), reviewAssignment, requirements.String(), productCheck, evidence)
+%s`, nativeFixIssueSkill, filepath.Join(d.Config.TaskDirectory, "task.md"), reviewAssignment, requirements.String(), productCheck, evidence, draft)
 }
 
 func configureNativeReviewers(command *experimentruntime.Command, reviewer experimentruntime.Profile) {

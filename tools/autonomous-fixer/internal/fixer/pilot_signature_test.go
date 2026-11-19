@@ -152,6 +152,9 @@ func TestPilotFixedSignatureBindsArtifactAuthorizationAndDraftReceipt(t *testing
 	if err := json.Unmarshal([]byte(issued.Outputs["result_signature"]), &authorized); err != nil || authorized.Line() != signature.Line() {
 		t.Fatal("publication lost the authorized signature", err, issued)
 	}
+	if issued.Outputs["report_sha256"] != result.ReportSHA256 {
+		t.Fatal("publication lost the authorized author report hash", issued)
+	}
 	sha, branch := strings.Repeat("b", 40), pilotBranch(1, checkpoint.Run)
 	cfg.PilotPublication = &PilotPublication{Number: 10, SHA: sha, Branch: branch}
 	body := "Closes #1\n\n<!-- qip-fix:1:500:1 -->"

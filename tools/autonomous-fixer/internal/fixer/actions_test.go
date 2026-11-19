@@ -242,6 +242,53 @@ func TestActionRESTControlRechecksAuthorizationAfterRouting(t *testing.T) {
 	}
 }
 
+func TestActionRESTRequirementsEditSurvivesUnrelatedIssueUpdate(t *testing.T) {
+	api := testGitHubServer(t)
+	cfg, checkpoint := actionStart(t, api)
+	originalBody := api.Issue.Body
+	revised := "Updated acceptance criteria."
+	api.Issue.Body, api.Issue.UpdatedAt = &revised, "2026-11-06T10:01:00Z"
+	cfg.EventName, cfg.Payload.Action = "issues", "edited"
+	cfg.Payload.Issue, cfg.Payload.Sender = api.Issue, api.Issue.User
+	cfg.Payload.Changes = map[string]json.RawMessage{"body": json.RawMessage(`{}`)}
+	oldEdit := cfg
+	oldEdit.Payload.Issue.Body, oldEdit.Payload.Issue.UpdatedAt = originalBody, "2026-11-06T10:00:59Z"
+	api.Issue.UpdatedAt = "2026-11-06T10:02:00Z"
+
+	if result := actionCall(t, "route", cfg); result.Outputs["process"] != "true" {
+		t.Fatal("the current requirements edit was skipped after the issue timestamp changed")
+	}
+	wrongIssue := cfg
+	wrongIssue.Payload.Issue.ID++
+	if result := actionCall(t, "route", wrongIssue); result.Outputs["process"] != "false" {
+		t.Fatal("the route accepted an edit to a different issue identity")
+	}
+	first := actionCall(t, "control", cfg).Result
+	if first == nil || first.Disposition != "accepted" || first.State.Contract.Version != checkpoint.ContractVersion+1 ||
+		first.State.Contract.RequirementsSHA256 != requirementsSHA256(api.Issue.Requirements()) {
+		t.Fatalf("the current edit did not update the contract: %+v", first)
+	}
+	api.Issue.UpdatedAt = "2026-11-06T10:03:00Z"
+	if result := actionCall(t, "control", cfg).Result; result == nil || result.Reason != "Event already handled." || result.State.Revision != first.State.Revision {
+		t.Fatalf("the controller did not deduplicate the edit: %+v", result)
+	}
+
+	api.Issue.Body, api.Issue.UpdatedAt = originalBody, "2026-11-06T10:04:00Z"
+	if result := actionCall(t, "route", cfg); result.Outputs["process"] != "false" {
+		t.Fatal("the route accepted the superseded edit")
+	}
+	cfg.Payload.Issue = api.Issue
+	api.Issue.UpdatedAt = "2026-11-06T10:05:00Z"
+	revert := actionCall(t, "control", cfg).Result
+	if revert == nil || revert.Disposition != "accepted" || revert.State.Contract.Version != checkpoint.ContractVersion+2 ||
+		revert.State.Contract.RequirementsSHA256 != checkpoint.Contract.RequirementsSHA256 {
+		t.Fatalf("the controller did not accept the revert: %+v", revert)
+	}
+	if result := actionCall(t, "control", oldEdit).Result; result == nil || result.Disposition != "ignored" || result.State.Revision != revert.State.Revision {
+		t.Fatalf("the delayed edit changed the contract after the revert: %+v", result)
+	}
+}
+
 func TestActionRESTReadyLabelMustBeRestoredBeforeContinuing(t *testing.T) {
 	api := testGitHubServer(t)
 	cfg, _ := actionStart(t, api)
