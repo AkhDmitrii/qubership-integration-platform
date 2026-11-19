@@ -38,7 +38,7 @@ jobs:
 
       - name: Maven verify
         working-directory: schemas
-        run: mvn --batch-mode verify -Dgpg.skip=true
+        run: mvn --batch-mode --no-transfer-progress verify -Dgpg.skip=true
 
   npm-build:
     runs-on: ubuntu-latest
