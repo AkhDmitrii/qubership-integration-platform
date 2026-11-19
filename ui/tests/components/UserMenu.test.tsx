@@ -237,7 +237,7 @@ describe("UserMenu", () => {
     fireEvent.click(container.querySelector('button[aria-label="User menu"]')!);
 
     await screen.findByText("Reset interface preferences");
-    expect(screen.queryByText("Theme")).toBeNull();
+    expect(screen.queryByText("Color theme")).toBeNull();
     expect(screen.queryByText("System")).toBeNull();
   });
 
@@ -247,7 +247,7 @@ describe("UserMenu", () => {
     const { container } = renderWithTheme();
     fireEvent.click(container.querySelector('button[aria-label="User menu"]')!);
 
-    const themeLabel = await screen.findByText("Theme");
+    const themeLabel = await screen.findByText("Color theme");
     const reset = screen.getByText("Reset interface preferences");
     expect(
       themeLabel.compareDocumentPosition(reset) &
