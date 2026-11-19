@@ -70,7 +70,7 @@ export const UserMenu: React.FC = () => {
   const themeSection = themeContext ? (
     <Flex align="center" gap={12} className={styles.themeSection}>
       <Text type="secondary" className={styles.label}>
-        Theme
+        Color theme
       </Text>
       <ThemeSwitcher
         currentTheme={themeContext.theme}
