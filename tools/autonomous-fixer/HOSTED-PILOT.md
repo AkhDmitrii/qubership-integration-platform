@@ -30,7 +30,7 @@ The inference process uses a loopback relay for its configured models. The real 
 
 ## First issue
 
-1. Open a narrowly scoped issue in the pilot repository. Record your pre-ready assessment and optionally run **QIP issue triage**. Its English summary is advice for the engineer.
+1. Open a narrowly scoped issue in the pilot repository. If `AGENT_PRE_READY_ON_OPEN` is set to `true`, this starts **QIP issue triage**. You can also record your assessment and run the workflow manually. Use its English summary as advice before assigning work. See [Pre-ready issue advice](JEV-ENGINEERING.md#pre-ready-issue-advice).
 2. Add `ready-for-agent` as an allowed operator. Follow the controller's issue comment to **QIP agent work**. Compare the registered worker run and attempt, base commit, issue text, and any captured attachments.
 3. Inspect the worker's preparation and author result. An `author-reported-fixed` outcome means the author reports that the checks and reviews completed. The draft and evidence are available for human review. If the author needs a decision, answer the versioned question in the issue. A new execution starts with the recorded answer. Use `/agent stop` to stop work.
 4. With automatic publication enabled, the trusted worker completion leads to a draft PR. For manual publication, dispatch **QIP agent publish** with the issue number and exact candidate run and attempt. Inspect the changed files, evidence and ordinary PR CI before merging.

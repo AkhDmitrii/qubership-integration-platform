@@ -2,9 +2,13 @@
 
 ## Pre-ready issue advice
 
-In GitHub Actions, select **QIP issue triage**, enter the number of an open issue and record your assessment before reading Jev's recommendation. The run summary shows both decisions, the snapshot time and hash, unread comment count, policy version, provider request ID (when available), provider cost and classification time. If the issue changes during the run, repeat triage on the new snapshot. Closing the issue or adding `ready-for-agent` makes it ineligible. Pull requests are ineligible.
+Set the repository variable `AGENT_PRE_READY_ON_OPEN` to `true` to run **QIP issue triage** when an issue opens. Any issue author can trigger an automatic run. The workflow reads the issue from GitHub and uses code from the default branch.
 
-The manual workflow runs from the default branch. Configure the repository secret `OPENROUTER_API_KEY` and the comma-separated repository variable `AGENT_ALLOWED_ACTORS`. Both the original operator and the user requesting a rerun must be on the list. The workflow uses the read-only GitHub token for issue snapshots and makes one classifier request per eligible run. A rerun is a new observation and can incur a new request charge. The pilot uses the title and description only. For image-dependent issues or later clarifications, inspect the issue before acting. An engineer can assign work with the existing label or command at any time.
+For a manual run, select **QIP issue triage** in GitHub Actions on the default branch. Enter the issue number and record your assessment before reading Jev's recommendation. Set `AGENT_ALLOWED_ACTORS` to a comma-separated list of GitHub logins. The manual run checks both the original operator and the user requesting a rerun against that list.
+
+Both modes use the repository secret `OPENROUTER_API_KEY` and make one classifier request per eligible run. The request uses the issue title and description. Pull requests, closed issues, and issues labeled `ready-for-agent` are ineligible. A rerun can incur another charge. The workflow uses a read-only GitHub token. Engineers decide whether to assign work or ask for more information.
+
+Read the run summary or download the `pre-ready-triage` artifact. It includes the recommendation, the snapshot time and hash, unread comment count, policy version, provider request ID and cost when available, and classification time. Manual runs also show the recorded engineer assessment. If the issue changes during the run, repeat triage on the new snapshot. Inspect comments and attachments before acting on a recommendation.
 
 For the pilot, sample consecutive eligible issues and keep disagreements, abstentions and failed calls. After the engineer assigns a task, check whether the author actually needed the predicted information. Track useful early questions and ready issues that the recommendation would have delayed.
 

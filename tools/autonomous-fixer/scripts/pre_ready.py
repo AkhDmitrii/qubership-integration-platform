@@ -50,16 +50,23 @@ def main():
         return
     if mode != "summary":
         raise ValueError("Unknown operation")
-    human = os.environ["ENGINEER_DECISION"]
-    if human not in ACTIONS:
-        raise ValueError("Unknown engineer decision")
+    event = os.environ["GITHUB_EVENT_NAME"]
+    if event == "workflow_dispatch":
+        human = os.environ["ENGINEER_DECISION"]
+        if human not in ACTIONS:
+            raise ValueError("Unknown engineer decision")
+        context = f"Engineer assessment before this run: **{ACTIONS[human]}**."
+    elif event == "issues":
+        context = "Automatic triage for a newly opened issue."
+    else:
+        raise ValueError("Unsupported triage event")
     lines = [f"## Pre-ready triage for issue #{number}", ""]
     if skip:
         lines.append(skip)
     else:
         captured = datetime.fromtimestamp((root / "issue.json").stat().st_mtime, timezone.utc)
         comments = issue["comments"]
-        lines += [f"Engineer assessment before this run: **{ACTIONS[human]}**.",
+        lines += [context,
                   f"Snapshot taken at {captured.isoformat(timespec='seconds')}.",
                   f"Title and description snapshot: `{digest}`.",
                   f"Comments excluded from this snapshot: {comments}. Attachment contents were not inspected.", ""]
@@ -69,7 +76,7 @@ def main():
         response = data.get("response") or {}
         if data:
             request_id = response.get("id")
-            if request_id:
+            if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request_id):
                 lines.append(f"Provider request: `{request_id}`.")
             cost = (response.get("usage") or {}).get("cost")
             lines.append(f"Provider cost: ${cost:.8f}." if isinstance(cost, (int, float)) else "Provider cost unavailable.")
@@ -96,8 +103,10 @@ def main():
                     lines.append(f"Missing information: `{missing}`.")
                     lines.append("Suggested clarification: " + MISSING[missing])
         lines += ["", "Review any comments or attachments before assigning work."]
-    with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-        print("\n".join(lines), file=f)
+    recommendation = "\n".join(lines) + "\n"
+    (root / "recommendation.md").write_text(recommendation, encoding="utf-8")
+    with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+        f.write(recommendation)
 
 
 if __name__ == "__main__":

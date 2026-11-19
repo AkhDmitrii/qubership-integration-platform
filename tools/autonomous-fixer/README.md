@@ -64,7 +64,7 @@ Four workflows call the binary.
 | `.github/workflows/agent-control.yaml` | Checks pull requests that change this tool; routes issue events and handles worker completion |
 | `.github/workflows/agent-work.yaml` | Admits the exact run and saves its checkpoint. In pilot mode it starts OpenCode, then exports the author result and evidence. |
 | `.github/workflows/agent-publish.yaml` | Verifies a selected pilot candidate and publishes a draft pull request |
-| `.github/workflows/agent-pre-ready.yaml` | Checks the operators for a manual, read-only triage run |
+| `.github/workflows/agent-pre-ready.yaml` | Offers read-only triage on issue opening and in authorized manual runs |
 
 Operational jobs require repository variable `AGENT_ENABLED` to equal `true`. Configure `AGENT_ALLOWED_ACTORS` as comma-separated GitHub logins and `AGENT_SCOPE_PATHS` as comma-separated permitted product paths. An empty or malformed allowlist denies every actor. Missing or invalid scope prevents execution. Set the repository variable `AGENT_MODE=pilot` to enable the hosted worker. An unset mode selects `fake`.
 
