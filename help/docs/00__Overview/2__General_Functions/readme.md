@@ -219,7 +219,7 @@ To reset saved configuration, click user icon ![user](img/user.svg) on top right
 ## Theme Settings
 <ins>Web UI</ins>
 
-To choose the interface theme, click the user icon ![user](img/user.svg) at the top right of the screen. The popup includes a **Theme** selector with the following options:
+To choose the interface theme, click the user icon ![user](img/user.svg) at the top right of the screen. The popup includes a **Color theme** selector with the following options:
 - ![desktop](img/desktop.svg) – System (default); automatically follows the theme of your operating system (light or dark mode).
 - ![sun](img/sun.svg) – Light; applies a bright background with dark text.
 - ![moon](img/moon.svg)  – Dark; applies a dark background with light text.
