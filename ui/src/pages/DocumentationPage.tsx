@@ -34,6 +34,8 @@ export const DocumentationPage: React.FC = () => {
   const { loadPaths } = useDocumentation();
 
   useEffect(() => {
+    let isCurrent = true;
+
     const loadDocument = async () => {
       setIsLoading(true);
       setError(null);
@@ -76,6 +78,9 @@ export const DocumentationPage: React.FC = () => {
         // Load markdown file
         const filePath = joinUrl(assetsBaseUrl, markdownPath);
         const response = await fetch(filePath);
+        if (!isCurrent) {
+          return;
+        }
 
         if (!response.ok) {
           setError(
@@ -87,6 +92,9 @@ export const DocumentationPage: React.FC = () => {
         }
 
         const text = await response.text();
+        if (!isCurrent) {
+          return;
+        }
 
         // Check if response is HTML (Vite SPA fallback) instead of markdown
         const contentType = response.headers.get("content-type");
@@ -102,14 +110,21 @@ export const DocumentationPage: React.FC = () => {
 
         setContent(text);
       } catch (err: unknown) {
-        console.error("Failed to load documentation:", err);
-        setError(err instanceof Error ? err.message : "Unknown error");
+        if (isCurrent) {
+          console.error("Failed to load documentation:", err);
+          setError(err instanceof Error ? err.message : "Unknown error");
+        }
       } finally {
-        setIsLoading(false);
+        if (isCurrent) {
+          setIsLoading(false);
+        }
       }
     };
 
     void loadDocument();
+    return () => {
+      isCurrent = false;
+    };
   }, [docPath, location.pathname, navigate, loadPaths]);
 
   const handleTOCSelect = useCallback(
