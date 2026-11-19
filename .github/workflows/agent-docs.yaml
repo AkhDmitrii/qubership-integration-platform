@@ -33,6 +33,10 @@ on:
       scheduled_basis:
         type: string
         required: true
+    outputs:
+      skip_reason:
+        description: Reason the requested issue was skipped
+        value: ${{ jobs.prepare.outputs.skip_reason }}
     secrets:
       AGENT_DOCS_APP_PRIVATE_KEY:
         required: false
@@ -64,6 +68,7 @@ jobs:
       artifact_id: ${{ steps.prepared.outputs.artifact-id }}
       base_sha: ${{ steps.prepare.outputs.base_sha }}
       claimed: ${{ steps.claim.outputs.claimed }}
+      skip_reason: ${{ steps.claim.outputs.skip_reason || steps.prepare.outputs.skip_reason }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
@@ -107,18 +112,24 @@ jobs:
           PROJECT_NUMBER: ${{ vars.AGENT_DOCS_PROJECT_NUMBER || '12' }}
           REPOSITORY: ${{ github.repository }}
           ACTOR: ${{ github.actor }}
+          BASIS: ${{ inputs.scheduled_basis }}
         run: |
           set -o pipefail
           [[ "$ISSUE" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid issue number'; exit 1; }
           [[ "$PROJECT_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid documentation project number'; exit 1; }
           test -n "$GITHUB_TOKEN" || { echo 'A GitHub read token is required'; exit 1; }
-          "$RUNNER_TEMP/docs-agent" prepare --repository "$REPOSITORY" --issue "$ISSUE" --project "$PROJECT_NUMBER" \
+          "$RUNNER_TEMP/docs-agent" prepare --repository "$REPOSITORY" --issue "$ISSUE" --project "$PROJECT_NUMBER" --basis "$BASIS" \
             --source "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/prepared" --actor "$ACTOR" \
             --request-id "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" 2>&1 | tee "$RUNNER_TEMP/prepare.log"
+          if [[ ! -f "$RUNNER_TEMP/prepared/plan.json" ]]; then
+            jq -er '"skip_reason=\(.skip_reason | strings | select(length > 0))"' "$RUNNER_TEMP/prepare.log" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           base_sha=$(jq -er '.base_sha | select(test("^[0-9a-f]{40}$"))' "$RUNNER_TEMP/prepared/plan.json")
           printf 'base_sha=%s\n' "$base_sha" >> "$GITHUB_OUTPUT"
       - name: Save the prepared input
         id: prepared
+        if: steps.prepare.outputs.base_sha != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: docs-prepared-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.scheduled_basis != '' && format('-{0}', inputs.issue) || '' }}
@@ -126,7 +137,7 @@ jobs:
           if-no-files-found: error
       - name: Create a GitHub App claim token
         id: claim-token
-        if: inputs.scheduled_basis != '' && inputs.apply && vars.AGENT_DOCS_APP_ID != ''
+        if: inputs.scheduled_basis != '' && inputs.apply && steps.prepare.outputs.base_sha != '' && vars.AGENT_DOCS_APP_ID != ''
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         env:
           INPUT_PERMISSION-VARIABLES: read
@@ -141,7 +152,7 @@ jobs:
           permission-organization-projects: read
       - name: Claim the scheduled documentation basis
         id: claim
-        if: inputs.scheduled_basis != '' && inputs.apply
+        if: inputs.scheduled_basis != '' && inputs.apply && steps.prepare.outputs.base_sha != ''
         env:
           GITHUB_TOKEN: ${{ steps.claim-token.outputs.token || secrets.AGENT_DOCS_GITHUB_TOKEN }}
           ACTIONS_READ_TOKEN: ${{ github.token }}
@@ -149,7 +160,7 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: |
           report=$("$RUNNER_TEMP/docs-agent" claim --prepared "$RUNNER_TEMP/prepared" --basis "$BASIS" --actor "$ACTOR" --apply)
-          jq -r '"claimed=\(.claimed)"' <<< "$report" >> "$GITHUB_OUTPUT"
+          jq -r '"claimed=\(.claimed)", "skip_reason=\(.reason)"' <<< "$report" >> "$GITHUB_OUTPUT"
           jq . <<< "$report"
       - name: Save the preparation log
         if: always()

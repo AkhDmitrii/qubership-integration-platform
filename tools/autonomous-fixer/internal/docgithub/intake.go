@@ -14,6 +14,8 @@ import (
 var (
 	errNoImplementation = errors.New("no unambiguous merged implementing pull request found")
 	errNotInDocReview   = errors.New("issue is not in In doc review")
+	errOutsideProject   = errors.New("issue is outside the configured documentation project")
+	errArchivedItem     = errors.New("documentation project item is archived")
 )
 
 type Prepared struct {
@@ -65,9 +67,10 @@ func (c *Client) project(ctx context.Context, node, projectID string, number int
 		Node struct {
 			ProjectItems struct {
 				Nodes []struct {
-					ID      string
-					Project struct{ ID string }
-					Status  struct {
+					ID         string
+					IsArchived bool
+					Project    struct{ ID string }
+					Status     struct {
 						OptionID string `json:"optionId"`
 						Field    struct{ ID string }
 					} `json:"fieldValueByName"`
@@ -76,7 +79,7 @@ func (c *Client) project(ctx context.Context, node, projectID string, number int
 			} `json:"projectItems"`
 		} `json:"node"`
 	}
-	query := `query($owner:String!,$repo:String!,$number:Int!,$node:ID!){repository(owner:$owner,name:$repo){owner{... on ProjectV2Owner{projectV2(number:$number){id fields(first:100){pageInfo{hasNextPage} nodes{... on ProjectV2SingleSelectField{id name options{id name}}}}}}}} node(id:$node){... on Issue{projectItems(first:100){pageInfo{hasNextPage} nodes{id project{id} fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{optionId field{... on ProjectV2SingleSelectField{id}}}}}}}}}`
+	query := `query($owner:String!,$repo:String!,$number:Int!,$node:ID!){repository(owner:$owner,name:$repo){owner{... on ProjectV2Owner{projectV2(number:$number){id fields(first:100){pageInfo{hasNextPage} nodes{... on ProjectV2SingleSelectField{id name options{id name}}}}}}}} node(id:$node){... on Issue{projectItems(first:100){pageInfo{hasNextPage} nodes{id isArchived project{id} fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{optionId field{... on ProjectV2SingleSelectField{id}}}}}}}}}`
 	owner, repo, _ := strings.Cut(c.Repository, "/")
 	if err := c.GraphQL(ctx, query, map[string]any{"owner": owner, "repo": repo, "number": number, "node": node}, &result); err != nil {
 		return Project{}, "", err
@@ -101,6 +104,9 @@ func (c *Client) project(ctx context.Context, node, projectID string, number int
 	status := ""
 	for _, item := range result.Node.ProjectItems.Nodes {
 		if item.Project.ID == p.ID {
+			if item.IsArchived {
+				return p, "", errArchivedItem
+			}
 			if p.ItemID != "" {
 				return p, "", fmt.Errorf("duplicate project membership")
 			}
@@ -111,8 +117,11 @@ func (c *Client) project(ctx context.Context, node, projectID string, number int
 			}
 		}
 	}
-	if p.ItemID == "" || p.StatusFieldID == "" || p.ReviewOptionID == "" || p.DoneOptionID == "" {
-		return p, "", fmt.Errorf("issue is not in the configured project or required statuses are absent")
+	if p.StatusFieldID == "" || p.ReviewOptionID == "" || p.DoneOptionID == "" {
+		return p, "", fmt.Errorf("required project statuses are absent")
+	}
+	if p.ItemID == "" {
+		return p, "", errOutsideProject
 	}
 	return p, status, nil
 }

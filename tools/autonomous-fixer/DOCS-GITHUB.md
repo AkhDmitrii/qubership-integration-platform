@@ -40,7 +40,7 @@ Run **QIP documentation queue** from the default branch to preview the configure
 
 | Repository variable | Value |
 | --- | --- |
-| `AGENT_DOCS_SCHEDULE_ENABLED` | Set to `true` to run discovery every hour at minute 17 UTC. |
+| `AGENT_DOCS_SCHEDULE_ENABLED` | Set to `true` to run discovery every day at 03:17 UTC. |
 | `AGENT_DOCS_SCHEDULE_APPLY` | Set to `true` after checking a live preview. Scheduled runs then process eligible issues. Manual queue runs also require **Apply**. |
 | `AGENT_DOCS_SCHEDULE_BATCH_SIZE` | Maximum issues to process in one run, from 1 to 10. Defaults to 2. The preview still lists every eligible issue. |
 
@@ -49,6 +49,12 @@ The queue uses the same repository and project permissions as manual documentati
 The queue skips issues outside **In doc review**, issues without a merged implementing PR, and issues with existing documentation PRs or active documentation runs. It processes selected issues one at a time. A scheduled attempt claims the issue and its implementing changes after preparation. Manual and scheduled jobs share the same concurrency group for an issue.
 
 If the claimed run stops before the documentation work step starts, a later queue run can try again. Once that step starts, the queue skips the same issue and implementing changes on later runs. Use the manual `run` operation to retry after inspecting the scheduled run. To return the queue to preview, unset `AGENT_DOCS_SCHEDULE_APPLY`.
+
+### Request documentation from an issue
+
+Post exactly `/agent docs` as a new comment on the issue. The command requires `AGENT_DOCS_ENABLED` and an allowlisted actor. Use it on an issue in **In doc review**, including an issue that is already closed. The command processes only that issue, even when the daily queue is disabled.
+
+The command uses the same eligibility, concurrency, and duplicate checks as the daily queue. An ineligible or duplicate request gets an English reply that links to its workflow run. The queue ignores edited comments, pull request comments, and requests from actors outside the allowlist.
 
 ## Model execution and evidence
 

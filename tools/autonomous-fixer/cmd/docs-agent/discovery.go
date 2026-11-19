@@ -20,8 +20,8 @@ func scheduleActions(repository string) (*fixer.GitHubClient, error) {
 	return fixer.NewGitHubClient(repository, token, nil, "")
 }
 
-func discoverSchedule(ctx context.Context, repository, actor string, project int) error {
-	if repository == "" || project <= 0 {
+func discoverSchedule(ctx context.Context, repository, actor string, project, issue int) error {
+	if repository == "" || project <= 0 || issue < 0 {
 		return fmt.Errorf("discover requires a repository and a positive project number")
 	}
 	client, err := github(repository)
@@ -40,7 +40,7 @@ func discoverSchedule(ctx context.Context, repository, actor string, project int
 	if err != nil {
 		return err
 	}
-	report, err := docgithub.Discover(ctx, client, actions, project)
+	report, err := docgithub.Discover(ctx, client, actions, project, issue)
 	if err != nil {
 		return err
 	}
@@ -76,7 +76,21 @@ func claimSchedule(ctx context.Context, prepared, basis, actor string) error {
 	if err != nil {
 		return err
 	}
-	claimed, reason, err := docgithub.ClaimSchedule(ctx, client, actions, plan, basis, actor, docgithub.ScheduledAttempt{RunID: run, Attempt: attempt})
+	background := os.Getenv("GITHUB_EVENT_NAME") != "issue_comment"
+	if !background {
+		allowed, err := client.API.RepositoryVariable(ctx, "AGENT_ALLOWED_ACTORS")
+		if err != nil {
+			return err
+		}
+		command, err := documentationCommand(ctx, client, actor, allowed)
+		if err != nil {
+			return err
+		}
+		if command.Issue != plan.IssueNumber {
+			return fmt.Errorf("documentation command changed before claim")
+		}
+	}
+	claimed, reason, err := docgithub.ClaimSchedule(ctx, client, actions, plan, basis, actor, docgithub.ScheduledAttempt{RunID: run, Attempt: attempt}, background)
 	if err != nil {
 		return err
 	}

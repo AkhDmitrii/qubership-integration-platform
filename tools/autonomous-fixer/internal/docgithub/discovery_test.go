@@ -143,7 +143,7 @@ func TestScheduleDiscoveryReportsEligibleAndSkippedWithoutWriting(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a.activeRuns, a.openDocsPR = tc.active, tc.docsPR
-			report, err := Discover(t.Context(), c, c.API, 12)
+			report, err := Discover(t.Context(), c, c.API, 12, 0)
 			if err != nil || a.commentCreates != 0 {
 				t.Fatal(report, err, a.commentCreates)
 			}
@@ -176,7 +176,7 @@ func TestScheduledClaimDeduplicatesAndRecoversBeforeModelWork(t *testing.T) {
 	}
 	claim := func(run int64, applied bool, reason string, commentCount int) {
 		t.Helper()
-		claimed, got, err := ClaimSchedule(ctx, c, c.API, plan, basis, "alice", ScheduledAttempt{RunID: run, Attempt: 1})
+		claimed, got, err := ClaimSchedule(ctx, c, c.API, plan, basis, "alice", ScheduledAttempt{RunID: run, Attempt: 1}, true)
 		if err != nil || claimed != applied || got != reason || a.commentCreates != commentCount {
 			t.Fatalf("claim %d = %v/%s/%v, comments %d", run, claimed, got, err, a.commentCreates)
 		}
@@ -207,8 +207,32 @@ func TestScheduledClaimDeduplicatesAndRecoversBeforeModelWork(t *testing.T) {
 func TestScheduledClaimRevalidatesIssueBeforeWriting(t *testing.T) {
 	c, a, plan := scheduleFixture(t)
 	a.project = "DONE"
-	claimed, reason, err := ClaimSchedule(t.Context(), c, c.API, plan, scheduleBasis(plan), "alice", ScheduledAttempt{RunID: 500, Attempt: 1})
+	claimed, reason, err := ClaimSchedule(t.Context(), c, c.API, plan, scheduleBasis(plan), "alice", ScheduledAttempt{RunID: 500, Attempt: 1}, true)
 	if err != nil || claimed || reason != "outside-doc-review" || a.commentCreates != 0 {
+		t.Fatal(claimed, reason, err, a.commentCreates)
+	}
+}
+
+func TestCommandDiscoveryAndClaimUseTheSameChecksWithoutCronOptIn(t *testing.T) {
+	c, a, plan := scheduleFixture(t)
+	a.project = "DONE"
+	report, err := Discover(t.Context(), c, c.API, 12, 1)
+	if err != nil || len(report.Eligible) != 0 ||
+		!reflect.DeepEqual(report.Skipped, []ScheduleSkip{{Issue: 1, Reason: "outside-doc-review"}}) {
+		t.Fatal(report, err)
+	}
+	a.project, a.enabled, a.apply = "REVIEW", false, false
+	report, err = Discover(t.Context(), c, c.API, 12, 1)
+	if err != nil || len(report.Skipped) != 0 ||
+		!reflect.DeepEqual(report.Eligible, []ScheduleCandidate{{Issue: 1, Basis: scheduleBasis(plan)}}) {
+		t.Fatal(report, err)
+	}
+	attempt := ScheduledAttempt{RunID: 501, Attempt: 1}
+	if _, _, err = ClaimSchedule(t.Context(), c, c.API, plan, scheduleBasis(plan), "bob", attempt, false); err == nil || a.commentCreates != 0 {
+		t.Fatal("unauthorized command claimed the documentation basis")
+	}
+	claimed, reason, err := ClaimSchedule(t.Context(), c, c.API, plan, scheduleBasis(plan), "alice", attempt, false)
+	if err != nil || !claimed || reason != "" || a.commentCreates != 1 {
 		t.Fatal(claimed, reason, err, a.commentCreates)
 	}
 }

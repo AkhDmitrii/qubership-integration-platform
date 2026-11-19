@@ -82,6 +82,7 @@ func run(ctx context.Context, args []string) error {
 	runDir := f.String("run", "", "completed work output directory")
 	actor := f.String("actor", "", "trusted workflow initiating actor")
 	basis := f.String("basis", "", "documentation basis selected by discovery")
+	reason := f.String("reason", "", "documentation queue skip reason")
 	apply := f.Bool("apply", false, "apply reviewed GitHub publication effects")
 	if e := f.Parse(args[1:]); e != nil {
 		return e
@@ -91,7 +92,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	switch args[0] {
 	case "discover":
-		return discoverSchedule(ctx, *repo, *actor, *project)
+		return discoverSchedule(ctx, *repo, *actor, *project, *number)
+	case "authorize-command", "reply-command":
+		return handleDocumentationCommand(ctx, *repo, *actor, *reason, args[0] == "reply-command")
 	case "claim":
 		if !*apply {
 			return fmt.Errorf("claim requires --apply")
@@ -123,6 +126,9 @@ func run(ctx context.Context, args []string) error {
 		}
 		intake, e := docgithub.Prepare(ctx, client, *number, *project)
 		if e != nil {
+			if skip := docgithub.DiscoverySkipReason(e); *basis != "" && skip != "" {
+				return json.NewEncoder(os.Stdout).Encode(map[string]string{"skip_reason": skip})
+			}
 			return e
 		}
 		intake.Plan.RequestID = *requestID

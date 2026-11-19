@@ -203,7 +203,8 @@ func previousScheduleWork(ctx context.Context, actions *fixer.GitHubClient, repo
 	}
 	workflow, _, _ := strings.Cut(run.Path, "@")
 	if run.ID != attempt.RunID || run.RunAttempt != attempt.Attempt || run.HeadRepository.FullName != repo ||
-		run.HeadBranch != "main" || workflow != scheduleWorkflow || (run.Event != "schedule" && run.Event != "workflow_dispatch") {
+		run.HeadBranch != "main" || workflow != scheduleWorkflow ||
+		(run.Event != "schedule" && run.Event != "workflow_dispatch" && run.Event != "issue_comment") {
 		return "", fmt.Errorf("scheduled run identity differs from its claim")
 	}
 	if run.Status != "completed" {
@@ -317,13 +318,31 @@ func scheduleIssueBlock(ctx context.Context, c *Client, actions *fixer.GitHubCli
 	return "", alreadyClaimed, nil
 }
 
-func Discover(ctx context.Context, c *Client, actions *fixer.GitHubClient, projectNumber int) (ScheduleReport, error) {
-	report := ScheduleReport{Eligible: []ScheduleCandidate{}, Skipped: []ScheduleSkip{}}
-	issues, skipped, err := projectReviewIssues(ctx, c, projectNumber)
-	if err != nil {
-		return report, err
+func DiscoverySkipReason(err error) string {
+	switch {
+	case errors.Is(err, errNoImplementation):
+		return "missing-implementation"
+	case errors.Is(err, errNotInDocReview):
+		return "outside-doc-review"
+	case errors.Is(err, errOutsideProject):
+		return "not-in-configured-project"
+	case errors.Is(err, errArchivedItem):
+		return "archived"
+	default:
+		return ""
 	}
-	report.Skipped = skipped
+}
+
+func Discover(ctx context.Context, c *Client, actions *fixer.GitHubClient, projectNumber, issueNumber int) (ScheduleReport, error) {
+	report := ScheduleReport{Eligible: []ScheduleCandidate{}, Skipped: []ScheduleSkip{}}
+	issues := []int{issueNumber}
+	if issueNumber == 0 {
+		var err error
+		issues, report.Skipped, err = projectReviewIssues(ctx, c, projectNumber)
+		if err != nil {
+			return report, err
+		}
+	}
 	login, err := c.API.RepositoryVariable(ctx, "AGENT_DOCS_PUBLISHER_LOGIN")
 	if err != nil {
 		return report, err
@@ -345,11 +364,9 @@ func Discover(ctx context.Context, c *Client, actions *fixer.GitHubClient, proje
 			reason = "active-docs-run"
 		default:
 			prepared, err := Prepare(ctx, c, issue, projectNumber)
+			reason = DiscoverySkipReason(err)
 			switch {
-			case errors.Is(err, errNoImplementation):
-				reason = "missing-implementation"
-			case errors.Is(err, errNotInDocReview):
-				reason = "outside-doc-review"
+			case reason != "":
 			case err != nil:
 				reason = "intake-unavailable"
 			case len(prepared.Ambiguous) > 0:
@@ -377,7 +394,7 @@ func Discover(ctx context.Context, c *Client, actions *fixer.GitHubClient, proje
 	return report, nil
 }
 
-func ClaimSchedule(ctx context.Context, c *Client, actions *fixer.GitHubClient, plan Plan, basis, actor string, attempt ScheduledAttempt) (bool, string, error) {
+func ClaimSchedule(ctx context.Context, c *Client, actions *fixer.GitHubClient, plan Plan, basis, actor string, attempt ScheduledAttempt, background bool) (bool, string, error) {
 	if err := validatePublicationPlan(plan); err != nil {
 		return false, "", err
 	}
@@ -387,17 +404,22 @@ func ClaimSchedule(ctx context.Context, c *Client, actions *fixer.GitHubClient, 
 	if err := Authorize(ctx, c, actor); err != nil {
 		return false, "", err
 	}
-	for _, name := range []string{"AGENT_DOCS_SCHEDULE_ENABLED", "AGENT_DOCS_SCHEDULE_APPLY"} {
-		value, err := c.API.RepositoryVariable(ctx, name)
-		if err != nil {
-			return false, "", err
-		}
-		if value != "true" {
-			return false, "schedule-apply-disabled", nil
+	if background {
+		for _, name := range []string{"AGENT_DOCS_SCHEDULE_ENABLED", "AGENT_DOCS_SCHEDULE_APPLY"} {
+			value, err := c.API.RepositoryVariable(ctx, name)
+			if err != nil {
+				return false, "", err
+			}
+			if value != "true" {
+				return false, "schedule-apply-disabled", nil
+			}
 		}
 	}
 	current, err := Revalidate(ctx, c, plan)
 	if err != nil {
+		if reason := DiscoverySkipReason(err); reason != "" {
+			return false, reason, nil
+		}
 		return false, "", err
 	}
 	if current.ProjectStatus != plan.Project.ReviewOptionID {
