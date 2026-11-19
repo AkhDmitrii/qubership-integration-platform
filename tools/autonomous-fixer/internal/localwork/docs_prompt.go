@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/doccycle"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/doctriage"
@@ -30,10 +31,15 @@ func documentationPrompt(inv workcycle.Invocation, evidence, base string) string
 		sessionScope = "Complete the investigation, any needed edit, and your own final checks in this session."
 		claimGuidance = "Include source and help evidence for each changed behavior and any affected consumer whose guidance remains accurate. Record unrelated older documentation defects in separate_findings."
 		routingGuidance = "The Jev route and recommendation are advisory inputs. Inspect the implementation and current help before deciding whether to make an edit."
-		stages[inv.Stage] = `Read the issue, merged changes, and relevant source. Inspect affected help sections, cross-references, and consumers. Resolve uncertainty by investigating the checkout and task attachments.
-If help needs a change, make the smallest correction on existing pages under help/docs. Apply the documentation style rules. Run all required checks on the final patch, including the help index build. Record each check's command, result, and relevant output under the evidence directory. Fix issues you find and rerun affected checks in this session. Return the final decision, claims, checks, and a Conventional Commits PR title and body with Related #N.
+		ids := make([]string, 0, len(inv.Request.RequiredChecks))
+		for _, check := range inv.Request.RequiredChecks {
+			ids = append(ids, check.ID)
+		}
+		stages[inv.Stage] = fmt.Sprintf(`Read the issue, merged changes, and relevant source. Inspect affected help sections, cross-references, and consumers. Resolve uncertainty by investigating the checkout and task attachments.
+If help needs a change, make the smallest correction on existing pages under help/docs. Apply the documentation style rules. Run all required checks on the final patch, including the help index build. Record each check's command, result, and relevant output under the evidence directory. Fix issues you find and rerun affected checks in this session. Return the final decision, claims, and a Conventional Commits PR title and body with Related #N.
+For a needed decision, include a top-level checks array with one passing result for each required ID: %s. Copy the IDs exactly. Give each result its own evidence references. You can include additional checks with unique IDs and evidence. If a check fails and you cannot fix it, return a verification-blocked question and include the failure evidence.
 If current help is sufficient, leave the checkout unchanged and return the no_change decision, evidence, and an English issue comment. Omit patch checks for that outcome.
-Return a structured question when evidence, verification, or a decision about a new page or section is missing. Report evidence for the blocker.`
+Return a structured question when evidence, verification, or a decision about a new page or section is missing. Report evidence for the blocker.`, strings.Join(ids, ", "))
 	}
 	return fmt.Sprintf(`You are executing one stage of a controller-owned QIP documentation task.
 %s

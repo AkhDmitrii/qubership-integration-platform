@@ -131,14 +131,40 @@ func ValidateAuthorCompletion(report workcycle.Report, freshEvidence func([]stri
 		}
 		required[check.ID] = true
 	}
-	if len(required) == 0 || len(required) != len(response.Checks) {
-		return errors.New("documentation author did not report every required check")
+	if len(required) == 0 {
+		return errors.New("documentation author completion requires configured checks")
 	}
+	seen := make(map[string]bool, len(response.Checks))
 	for _, check := range response.Checks {
-		if !required[check.ID] || check.Outcome != "pass" || !freshEvidence(check.Evidence) {
-			return fmt.Errorf("documentation author check %q requires a passing result with evidence", check.ID)
+		label := "additional documentation check"
+		if required[check.ID] {
+			label = fmt.Sprintf("required documentation check %q", check.ID)
 		}
-		delete(required, check.ID)
+		if strings.TrimSpace(check.ID) == "" {
+			return errors.New("documentation check is missing an ID")
+		}
+		if seen[check.ID] {
+			return fmt.Errorf("%s has more than one result", label)
+		}
+		if check.Outcome == "fail" {
+			return fmt.Errorf("%s failed", label)
+		}
+		if check.Outcome != "pass" {
+			return fmt.Errorf("%s requires a pass or fail outcome", label)
+		}
+		if !freshEvidence(check.Evidence) {
+			return fmt.Errorf("%s is missing evidence from the author session", label)
+		}
+		seen[check.ID] = true
+	}
+	var missing []string
+	for _, check := range report.Request.RequiredChecks {
+		if !seen[check.ID] {
+			missing = append(missing, check.ID)
+		}
+	}
+	if len(missing) != 0 {
+		return fmt.Errorf("missing required documentation checks: %s", strings.Join(missing, ", "))
 	}
 	return nil
 }

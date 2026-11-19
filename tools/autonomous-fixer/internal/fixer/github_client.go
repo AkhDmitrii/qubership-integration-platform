@@ -26,6 +26,11 @@ type GitHubClient struct {
 	client            *http.Client
 }
 
+type githubResponse struct {
+	status int
+	header http.Header
+}
+
 func (c *GitHubClient) RepositoryVariable(ctx context.Context, name string) (string, error) {
 	var variable struct {
 		Value string `json:"value"`
@@ -87,26 +92,26 @@ func (c *GitHubClient) repoPath(path string) (string, error) {
 	}
 	return value, nil
 }
-func (c *GitHubClient) send(ctx context.Context, method, path string, body, target any) (http.Header, error) {
+func (c *GitHubClient) send(ctx context.Context, method, path string, body, target any) (githubResponse, error) {
 	ref, err := url.Parse(path)
 	if err != nil {
-		return nil, fmt.Errorf("invalid API path")
+		return githubResponse{}, fmt.Errorf("invalid API path")
 	}
 	endpoint := c.base.ResolveReference(ref)
 	if endpoint.Scheme != c.base.Scheme || endpoint.Host != c.base.Host || !strings.HasPrefix(endpoint.Path, c.base.Path) {
-		return nil, fmt.Errorf("invalid API path")
+		return githubResponse{}, fmt.Errorf("invalid API path")
 	}
 	var reader io.Reader
 	if body != nil {
 		data, e := json.Marshal(body)
 		if e != nil {
-			return nil, e
+			return githubResponse{}, e
 		}
 		reader = bytes.NewReader(data)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), reader)
 	if err != nil {
-		return nil, fmt.Errorf("invalid GitHub request")
+		return githubResponse{}, fmt.Errorf("invalid GitHub request")
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
@@ -116,35 +121,39 @@ func (c *GitHubClient) send(ctx context.Context, method, path string, body, targ
 	}
 	response, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("GitHub request failed")
+		return githubResponse{}, fmt.Errorf("GitHub request failed")
 	}
 	defer response.Body.Close()
+	result := githubResponse{status: response.StatusCode, header: response.Header}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, &HTTPError{Status: response.StatusCode}
+		return result, &HTTPError{Status: response.StatusCode}
 	}
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("GitHub response failed")
+		return result, fmt.Errorf("GitHub response failed")
 	}
 	if response.StatusCode == 204 || response.StatusCode == 202 && len(bytes.TrimSpace(data)) == 0 {
-		return response.Header, nil
+		return result, nil
 	}
 	if !json.Valid(data) {
-		return nil, fmt.Errorf("GitHub returned invalid JSON")
+		return result, fmt.Errorf("GitHub returned invalid JSON")
 	}
 	if target != nil {
 		if err = json.Unmarshal(data, target); err != nil {
-			return nil, fmt.Errorf("GitHub returned invalid JSON")
+			return result, fmt.Errorf("GitHub returned invalid JSON")
 		}
 	}
-	return response.Header, nil
+	return result, nil
 }
-func (c *GitHubClient) Request(ctx context.Context, method, path string, body, target any) error {
+func (c *GitHubClient) request(ctx context.Context, method, path string, body, target any) (githubResponse, error) {
 	p, e := c.repoPath(path)
 	if e != nil {
-		return e
+		return githubResponse{}, e
 	}
-	_, e = c.send(ctx, method, p, body, target)
+	return c.send(ctx, method, p, body, target)
+}
+func (c *GitHubClient) Request(ctx context.Context, method, path string, body, target any) error {
+	_, e := c.request(ctx, method, path, body, target)
 	return e
 }
 func (c *GitHubClient) List(ctx context.Context, path, collectionKey string) ([]json.RawMessage, error) {
@@ -160,7 +169,7 @@ func (c *GitHubClient) List(ctx context.Context, path, collectionKey string) ([]
 		q.Set("page", strconv.Itoa(page))
 		parsed.RawQuery = q.Encode()
 		var data json.RawMessage
-		headers, e := c.send(ctx, "GET", parsed.String(), nil, &data)
+		response, e := c.send(ctx, "GET", parsed.String(), nil, &data)
 		if e != nil {
 			return nil, e
 		}
@@ -176,7 +185,7 @@ func (c *GitHubClient) List(ctx context.Context, path, collectionKey string) ([]
 			return nil, fmt.Errorf("GitHub returned an invalid collection")
 		}
 		result = append(result, items...)
-		link, present := headers["Link"]
+		link, present := response.header["Link"]
 		if present {
 			if !strings.Contains(strings.Join(link, ","), `rel="next"`) {
 				break

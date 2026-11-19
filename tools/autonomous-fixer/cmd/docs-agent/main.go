@@ -285,6 +285,8 @@ func run(ctx context.Context, args []string) error {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"status": result.Status, "route": routing.Route, "plan_id": plan.ID, "work_directory": cfg.OutputDirectory})
 	case "restore":
 		return restore(ctx, *prepared, *runDir, *source, *workspace)
+	case "rejected-diff":
+		return exportRejectedDiff(ctx, *prepared, *runDir, *workspace, *output)
 	case "publish", "reconcile":
 		var plan docgithub.Plan
 		var client *docgithub.Client

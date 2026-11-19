@@ -13,26 +13,29 @@ import (
 )
 
 type testAPI struct {
-	mu                    sync.Mutex
-	Server                *httptest.Server
-	Repository            string
-	Bot                   GitHubUser
-	Issue                 Issue
-	Comments              []Comment
-	Events                []json.RawMessage
-	Runs                  []WorkflowRun
-	Artifacts             []map[string]any
-	Trace                 []string
-	FailDispatchResponse  bool
-	DispatchWithoutID     bool
-	DispatchReadMisses    int
-	CompletionReadMisses  int
-	PilotReportReadMisses int
-	CancellationPending   bool
-	CurrentSHA            string
-	Labels                map[string]bool
-	Variables             map[string]string
-	DraftPullRequest      map[string]any
+	mu                       sync.Mutex
+	Server                   *httptest.Server
+	Repository               string
+	Bot                      GitHubUser
+	Issue                    Issue
+	Comments                 []Comment
+	Events                   []json.RawMessage
+	Runs                     []WorkflowRun
+	Artifacts                []map[string]any
+	Trace                    []string
+	FailDispatchResponse     bool
+	DispatchWithoutID        bool
+	DispatchMalformed        bool
+	DispatchRejectStatus     int
+	DispatchReadMisses       int
+	DispatchProvisionalTitle bool
+	CompletionReadMisses     int
+	PilotReportReadMisses    int
+	CancellationPending      bool
+	CurrentSHA               string
+	Labels                   map[string]bool
+	Variables                map[string]string
+	DraftPullRequest         map[string]any
 }
 
 func testGitHubServer(t *testing.T) *testAPI {
@@ -128,6 +131,11 @@ func (a *testAPI) serve(w http.ResponseWriter, r *http.Request) {
 			write(map[string]any{"workflow_runs": a.Runs})
 		}
 	case path == "/actions/workflows/agent-work.yaml/dispatches" && r.Method == "POST":
+		if a.DispatchRejectStatus != 0 {
+			w.WriteHeader(a.DispatchRejectStatus)
+			write(map[string]string{"message": "private diagnostic body"})
+			return
+		}
 		var input struct {
 			Ref    string            `json:"ref"`
 			Inputs map[string]string `json:"inputs"`
@@ -147,6 +155,10 @@ func (a *testAPI) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if a.DispatchWithoutID {
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if a.DispatchMalformed {
+			write(map[string]string{"workflow_run_id": "unreadable"})
 			return
 		}
 		write(map[string]int64{"workflow_run_id": run.ID})
@@ -176,6 +188,9 @@ func (a *testAPI) serve(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			run := a.Runs[i]
+			if a.DispatchProvisionalTitle {
+				run.DisplayTitle = "QIP agent work"
+			}
 			if r.Method == "GET" && run.Status == "completed" && a.CompletionReadMisses > 0 {
 				a.CompletionReadMisses--
 				run.Status, run.Conclusion = "in_progress", ""
