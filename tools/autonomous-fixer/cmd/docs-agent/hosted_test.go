@@ -18,6 +18,7 @@ import (
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/docpacket"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/doctriage"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/jev"
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/localwork"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/workcycle"
 )
 
@@ -36,12 +37,16 @@ func TestHostedDocumentationHandoffRestoresFreshCandidate(t *testing.T) {
 		{route: "docs-no-change", patch: false},
 	} {
 		t.Run(fmt.Sprintf("%s-patch-%t", tc.route, tc.patch), func(t *testing.T) {
-			checkHostedHandoff(t, tc.route, tc.patch)
+			checkHostedHandoff(t, tc.route, tc.patch, false)
 		})
 	}
 }
 
-func checkHostedHandoff(t *testing.T, route string, patch bool) {
+func TestHostedDocumentationPreservesRejectedDiff(t *testing.T) {
+	checkHostedHandoff(t, "docs-assess", true, true)
+}
+
+func checkHostedHandoff(t *testing.T, route string, patch, omitCheck bool) {
 	t.Helper()
 	ctx := context.Background()
 	root := t.TempDir()
@@ -91,6 +96,9 @@ func checkHostedHandoff(t *testing.T, route string, patch bool) {
 	task := "The existing instruction matches the implementation.\n"
 	if patch {
 		task = "Update the outdated instruction.\n"
+	}
+	if omitCheck {
+		task += "Omit a required check in the fixture response.\n"
 	}
 	writeFixtureFile(t, filepath.Join(prepared, "task.md"), task, 0600)
 	if err := save(filepath.Join(prepared, "plan.json"), plan); err != nil {
@@ -142,12 +150,23 @@ func checkHostedHandoff(t *testing.T, route string, patch bool) {
 	})
 	runtime := filepath.Join(root, "opencode")
 	writeFixtureFile(t, runtime, hostedRuntimeFixture, 0700)
-	if err := run(ctx, []string{
+	workErr := run(ctx, []string{
 		"work", "--hosted", "--prepared", prepared, "--source", source, "--workspace", workspace, "--output", output,
 		"--runtime", runtime, "--runtime-version", "opencode v2.2.6", "--model", "openrouter/openai/gpt-6-luna", "--effort", "medium",
 		"--handoff", handoff,
-	}); err != nil {
-		t.Fatal(err)
+	})
+	if omitCheck {
+		if workErr == nil || workErr.Error() != "missing required documentation checks: documentation_index" {
+			t.Fatalf("unexpected work error: %v", workErr)
+		}
+		if _, err := os.Lstat(handoff); !os.IsNotExist(err) {
+			t.Fatalf("failed work created a publication handoff: %v", err)
+		}
+		checkRejectedDiff(t, source, workspace, prepared, filepath.Join(output, "work"), sha)
+		return
+	}
+	if workErr != nil {
+		t.Fatal(workErr)
 	}
 	models := []string{jev.DefaultModel}
 	if route != "docs-no-change" {
@@ -232,6 +251,75 @@ func checkHostedHandoff(t *testing.T, route string, patch bool) {
 	}
 }
 
+func checkRejectedDiff(t *testing.T, source, workspace, prepared, runDir, base string) {
+	t.Helper()
+	ctx := context.Background()
+	output := filepath.Join(t.TempDir(), "rejected.patch")
+	if err := run(ctx, []string{"rejected-diff", "--prepared", prepared, "--run", runDir, "--workspace", workspace, "--output", output}); err != nil {
+		t.Fatal(err)
+	}
+	restored := filepath.Join(t.TempDir(), "restored")
+	if err := git(ctx, source, "worktree", "add", "--detach", restored, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := git(ctx, restored, "apply", output); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(restored, "help/docs/readme.md"))
+	if err != nil || string(body) != "# Help\n\nUpdated instruction.\n" {
+		t.Fatal(string(body), err)
+	}
+
+	reportPath := filepath.Join(runDir, "report.json")
+	var report workcycle.Report
+	if err := read(reportPath, &report); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, path, content, problem string
+		symlink                      bool
+	}{
+		{"credential", "help/docs/readme.md", "fixture-openrouter-key", "controller credential", false},
+		{"binary file", "help/docs/readme.md", "\x00private data", "requires text files", false},
+		{"outside help", "help/README.md", "Unexpected edit.", "outside the supported help scope", false},
+		{"symlink", "help/docs/readme.md", "../README.md", "requires regular files", true},
+		{"untracked file", "help/docs/other.md", "Unexpected file.", "requires tracked paths", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := git(ctx, workspace, "restore", "--", "help"); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(workspace, tc.path)
+			if tc.symlink {
+				if err := os.Remove(target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(tc.content, target); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				writeFixtureFile(t, target, tc.content, 0600)
+			}
+			snapshot, err := localwork.SnapshotWorkspace(ctx, workspace, base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			report.Candidate = snapshot
+			if err := save(reportPath, report); err != nil {
+				t.Fatal(err)
+			}
+			output := filepath.Join(t.TempDir(), "rejected.patch")
+			err = exportRejectedDiff(ctx, prepared, runDir, workspace, output)
+			if err == nil || !strings.Contains(err.Error(), tc.problem) {
+				t.Fatalf("unexpected diff validation: %v", err)
+			}
+			if _, err := os.Lstat(output); !os.IsNotExist(err) {
+				t.Fatalf("unsafe diff left a file: %v", err)
+			}
+		})
+	}
+}
+
 func rejectInvalidAuthorProof(t *testing.T, plan docgithub.Plan, runDir, workspace string) {
 	t.Helper()
 	reportPath := filepath.Join(runDir, "report.json")
@@ -253,6 +341,12 @@ func rejectInvalidAuthorProof(t *testing.T, plan docgithub.Plan, runDir, workspa
 		}},
 		{"independent approval", func(r *workcycle.Report) {
 			r.Observations = append(r.Observations, workcycle.Observation{Stage: "docs-review"})
+		}},
+		{"failed additional check", func(r *workcycle.Report) {
+			r.Observations[0].Declaration.Checks[4].Outcome = "fail"
+		}},
+		{"duplicate required check", func(r *workcycle.Report) {
+			r.Observations[0].Declaration.Checks[4] = r.Observations[0].Declaration.Checks[0]
 		}},
 		{"routing evidence reused for a check", func(r *workcycle.Report) {
 			r.Observations[0].Declaration.Checks[0].Evidence = r.Request.DocumentationEntry.Evidence
@@ -308,6 +402,7 @@ invocation = json.loads(prompt.split('Controller input:\n', 1)[1].split('\n\nSou
 stage = invocation['stage']
 assert stage == 'docs-author'
 assert 'Complete the investigation, any needed edit, and your own final checks in this session.' in prompt
+assert 'one passing result for each required ID: diff_scope, source_facts, structure_links, documentation_index.' in prompt
 config = json.loads(os.environ['OPENCODE_CONFIG_CONTENT'])
 assert config['experimental']['subagent_depth'] == 0
 assert {'action': 'subagent', 'resource': '*', 'effect': 'deny'} in config['permissions']
@@ -343,6 +438,9 @@ response = {'evidence': refs}
 if invocation['request']['task'].startswith('Update'):
     Path('help/docs/readme.md').write_text('# Help\n\nUpdated instruction.\n')
     response['checks'] = [{'id': check['id'], 'outcome': 'pass', 'evidence': refs} for check in invocation['request']['required_checks']]
+    if 'Omit a required check' in invocation['request']['task']:
+        response['checks'].pop()
+    response['checks'].append({'id': 'markdownlint', 'outcome': 'pass', 'evidence': refs})
 else:
     doc.update(decision='no_change', reason='already_covered', issue_comment='The existing instruction still matches the implementation.')
     doc['claims'][0].update(attribution='unchanged', needs_change=False, action='Keep the existing instruction.')

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -41,6 +42,68 @@ func validateHostedRuntime(ctx context.Context, cfg localwork.Config) error {
 	return nil
 }
 
+func controllerCredentials() [][]byte {
+	var secrets [][]byte
+	for _, key := range []string{"OPENROUTER_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"} {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value != "" {
+			encoded, _ := json.Marshal(value)
+			secrets = append(secrets, []byte(value), encoded[1:len(encoded)-1])
+		}
+	}
+	return secrets
+}
+
+func exportRejectedDiff(ctx context.Context, prepared, runDir, workspace, output string) error {
+	for _, name := range []string{prepared, runDir, workspace, output} {
+		if !filepath.IsAbs(name) {
+			return fmt.Errorf("rejected-diff requires absolute prepared, run, workspace, and output paths")
+		}
+	}
+	var plan docgithub.Plan
+	if err := read(filepath.Join(prepared, "plan.json"), &plan); err != nil {
+		return err
+	}
+	if err := plan.Validate(); err != nil {
+		return err
+	}
+	reportPath := filepath.Join(runDir, "report.json")
+	if err := regularPath(runDir, reportPath, false); err != nil {
+		return err
+	}
+	info, err := os.Lstat(reportPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("rejected-diff requires a regular work report")
+	}
+	var report workcycle.Report
+	if err := read(reportPath, &report); err != nil {
+		return err
+	}
+	if report.Workflow != string(doccycle.AuthorStage) || report.Request.TaskID != fmt.Sprintf("%s#%d:documentation", plan.Repository, plan.IssueNumber) ||
+		(report.Status != "rejected" && report.Status != "verification-blocked") {
+		return fmt.Errorf("rejected-diff requires a failed hosted documentation run for this issue")
+	}
+	patch, err := localwork.RejectedDocumentationPatch(ctx, workspace, plan.BaseSHA, report.Candidate)
+	if err != nil || len(patch) == 0 {
+		return err
+	}
+	for _, secret := range controllerCredentials() {
+		if bytes.Contains(patch, secret) {
+			return fmt.Errorf("rejected documentation diff contains a controller credential")
+		}
+	}
+	file, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write(patch)
+	closeErr := file.Close()
+	if err = errors.Join(writeErr, closeErr); err != nil {
+		_ = os.Remove(output)
+	}
+	return err
+}
+
 func exportHandoff(ctx context.Context, plan docgithub.Plan, output, workspace, destination string) error {
 	output, err := filepath.EvalSymlinks(output)
 	if err != nil {
@@ -56,14 +119,7 @@ func exportHandoff(ctx context.Context, plan docgithub.Plan, output, workspace, 
 	}
 	defer os.RemoveAll(tmp)
 
-	var secrets [][]byte
-	for _, key := range []string{"OPENROUTER_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"} {
-		value := strings.TrimSpace(os.Getenv(key))
-		if value != "" {
-			encoded, _ := json.Marshal(value)
-			secrets = append(secrets, []byte(value), encoded[1:len(encoded)-1])
-		}
-	}
+	secrets := controllerCredentials()
 	copyFile := func(rel string, optional bool) error {
 		source := filepath.Join(output, rel)
 		if err := regularPath(output, source, false); err != nil {

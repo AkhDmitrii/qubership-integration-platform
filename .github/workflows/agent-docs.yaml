@@ -196,25 +196,49 @@ jobs:
         if: always()
         env:
           WORK_OUTCOME: ${{ steps.work.outcome }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           diagnostics=$(mktemp -d "$RUNNER_TEMP/docs-diagnostics.XXXXXX")
-          printf 'path=%s\n' "$diagnostics/summary.json" >> "$GITHUB_OUTPUT"
+          printf 'path=%s\n' "$diagnostics/" >> "$GITHUB_OUTPUT"
           report="$RUNNER_TEMP/docs-result/work/report.json"
           usage="$RUNNER_TEMP/docs-result/work/provider-usage.json"
+          jev="$RUNNER_TEMP/docs-result/jev-report.json"
           if [[ ! -f "$report" || -L "$report" ]]; then report=/dev/null; fi
           if [[ ! -f "$usage" || -L "$usage" ]]; then usage=/dev/null; fi
-          jq -n --arg outcome "$WORK_OUTCOME" --rawfile report "$report" --rawfile usage "$usage" '
+          if [[ ! -f "$jev" || -L "$jev" ]]; then jev=/dev/null; fi
+          if [[ "$WORK_OUTCOME" == failure && "$report" != /dev/null && -x "$RUNNER_TEMP/docs-agent" ]]; then
+            "$RUNNER_TEMP/docs-agent" rejected-diff --prepared "$RUNNER_TEMP/prepared" \
+              --run "$RUNNER_TEMP/docs-result/work" --workspace "$RUNNER_TEMP/docs-candidate" \
+              --output "$diagnostics/rejected.patch" || echo 'Rejected documentation diff is unavailable.'
+          fi
+          rejected_diff_saved=false
+          if [[ -s "$diagnostics/rejected.patch" ]]; then rejected_diff_saved=true; fi
+          jq -n --arg outcome "$WORK_OUTCOME" --argjson rejected_diff_saved "$rejected_diff_saved" \
+            --rawfile report "$report" --rawfile usage "$usage" --rawfile jev "$jev" '
             def parse_object: (try fromjson catch null) | objects // {};
             def one_of($values): . as $value | if $values | index($value) then $value else null end;
+            def required_ids: ["diff_scope", "source_facts", "structure_links", "documentation_index"];
             ($report | parse_object) as $run |
             ($usage | parse_object) as $provider |
+            ($jev | parse_object) as $classifier |
+            [$run.observations[]? | objects | select(.stage == "docs-author") | .declaration.checks[]? | objects] as $checks |
             {
               work_step_outcome: $outcome,
               status: ($run.status | one_of(["rejected", "needs-human", "verification-blocked", "docs-no-change", "docs-ready-for-pr"])),
               route: ((try $run.request.documentation_entry.route catch null) | one_of(["docs-no-change", "docs-assess", "docs-write"])),
               stages: [$run.observations[]? | objects | .stage | select(. == "docs-author")],
+              required_check_results: [required_ids[] as $id | $checks[] | select(.id == $id) |
+                {id: $id, outcome: ((.outcome | one_of(["pass", "fail"])) // "invalid")}],
+              missing_required_checks: [
+                select((try $run.documentation.decision catch null) == "needed") |
+                required_ids[] as $id | select($checks | any(.id == $id) | not) | $id
+              ],
+              additional_check_count: ([$checks[] | select((.id | one_of(required_ids)) == null)] | length),
               native_openrouter_attempts: ($provider.attempts | numbers) // null,
-              native_openrouter_cost_usd: ($provider.reported_cost_usd | numbers) // null
+              native_openrouter_cost_usd: ($provider.reported_cost_usd | numbers) // null,
+              jev_request_attempted: (if ($classifier.request_attempted | type) == "boolean" then $classifier.request_attempted else null end),
+              jev_cost_usd: ((try $classifier.response.usage.cost catch null) | numbers) // null,
+              rejected_diff_saved: $rejected_diff_saved
             }
           ' > "$diagnostics/summary.json"
       - name: Save work diagnostics
