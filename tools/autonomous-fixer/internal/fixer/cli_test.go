@@ -155,6 +155,54 @@ func TestNativeCLIAuthorizesTriageWithoutAPICredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeCLIAcknowledgesDispatchBeforeAdmission(t *testing.T) {
+	c := newNativeCLI(t)
+	c.api.DispatchProvisionalTitle = true
+	start := c.comment(10, "/agent fix")
+	control := c.ok("control", start)
+	if control.summary["phase"] != "queued" || control.summary["dispatch_receipt"] != "acknowledged" || control.summary["dispatch_run_id"] != "500" || control.summary["dispatch_http_status"] != "200" {
+		t.Fatalf("missing dispatch receipt before the run is ready: %+v", control.summary)
+	}
+	state := actionReadState(t, c.api)
+	if state.Effects[0].Status != "confirmed" || state.Effects[0].Result.RunID != 500 || state.Executions[0].Run != nil {
+		t.Fatalf("dispatch receipt changed admission: %+v", state)
+	}
+	if c.api.count("GET", "/repos/org/repo/actions/runs/500") != 0 {
+		t.Fatal("control tried to read the run before admission")
+	}
+	c.ok("control", start)
+	c.api.DispatchProvisionalTitle = false
+	worker := c.worker()
+	c.api.Runs[0].HeadSHA = strings.Repeat("b", 40)
+	invalid := c.call("admit", worker)
+	if invalid.err == nil || !strings.Contains(invalid.stderr, "provenance") {
+		t.Fatalf("admitted a worker with a mismatched commit: %+v", invalid)
+	}
+	c.api.Runs[0].HeadSHA = c.api.CurrentSHA
+	requireNativeFlag(t, c.ok("admit", worker), "admitted", "true")
+	if c.api.count("POST", "/repos/org/repo/actions/workflows/agent-work.yaml/dispatches") != 1 {
+		t.Fatal("admission or repeated delivery triggered a second dispatch")
+	}
+}
+
+func TestNativeCLIDispatchFailureReportsOnlySafeDetails(t *testing.T) {
+	c := newNativeCLI(t)
+	c.api.DispatchRejectStatus = 403
+	start := c.comment(10, "/agent fix")
+	control := c.call("control", start)
+	if control.err == nil || control.summary["disposition"] != "recovery-required" || control.summary["dispatch_receipt"] != "rejected" || control.summary["dispatch_http_status"] != "403" {
+		t.Fatalf("missing dispatch rejection details: %+v", control)
+	}
+	if strings.Contains(control.stderr+fmt.Sprint(control.summary), "private diagnostic body") {
+		t.Fatal("the CLI reported the raw GitHub error body")
+	}
+	c.call("control", start)
+	if len(c.api.Runs) != 0 || c.api.count("POST", "/repos/org/repo/actions/workflows/agent-work.yaml/dispatches") != 1 {
+		t.Fatal("replaying a rejected dispatch retried the POST")
+	}
+}
+
 func TestNativeCLICheckpointAnswerStop(t *testing.T) {
 	c := newNativeCLI(t)
 	c.api.FailDispatchResponse = true

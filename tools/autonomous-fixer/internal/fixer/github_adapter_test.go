@@ -29,23 +29,32 @@ func TestRESTControllerRecoversLostDispatchResponse(t *testing.T) {
 
 func TestRESTControllerRetriesDispatchReadbackWithoutRedispatch(t *testing.T) {
 	for _, test := range []struct {
-		name      string
-		missingID bool
-		readPath  string
+		name       string
+		missingID  bool
+		malformed  bool
+		lost       bool
+		receipt    string
+		httpStatus int
 	}{
-		{"Run lookup returns 404", false, "/repos/org/repo/actions/runs/500"},
-		{"Workflow run list is empty", true, "/repos/org/repo/actions/workflows/agent-work.yaml/runs"},
+		{"Acknowledgement has no body", true, false, false, "acknowledged", 204},
+		{"Acknowledgement has no usable run ID", false, true, false, "acknowledged", 200},
+		{"Dispatch response is lost", false, false, true, "unconfirmed", 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			api := testGitHubServer(t)
-			api.DispatchWithoutID, api.DispatchReadMisses = test.missingID, 2
-			controller := NewController(api.adapter(t))
+			api.DispatchWithoutID, api.DispatchMalformed, api.FailDispatchResponse = test.missingID, test.malformed, test.lost
+			api.DispatchReadMisses = 2
+			adapter := api.adapter(t)
+			controller := NewController(adapter)
 			result, err := controller.Handle(context.Background(), Event{Type: "fix", Actor: "alice", Source: Source{Kind: "comment", ID: 3, Action: "created"}})
 			if err != nil || result.Disposition != "accepted" || result.State.Effects[0].Status != "confirmed" || result.State.Effects[0].Result.RunID != 500 {
 				t.Fatalf("dispatch readback did not confirm the run: %+v %v", result, err)
 			}
-			if api.count("POST", "/repos/org/repo/actions/workflows/agent-work.yaml/dispatches") != 1 || api.count("GET", test.readPath) != 3 {
+			if api.count("POST", "/repos/org/repo/actions/workflows/agent-work.yaml/dispatches") != 1 || api.count("GET", "/repos/org/repo/actions/workflows/agent-work.yaml/runs") != 3 {
 				t.Fatal("the controller must retry only the observation", api.Trace)
+			}
+			if d := adapter.dispatch; d == nil || d.Receipt != test.receipt || d.DispatchHTTPStatus != test.httpStatus || d.RunID != 500 || d.Readback != "observed" {
+				t.Fatalf("dispatch diagnostic does not describe the response and recovery: %+v", d)
 			}
 		})
 	}
@@ -53,6 +62,7 @@ func TestRESTControllerRetriesDispatchReadbackWithoutRedispatch(t *testing.T) {
 
 func TestRESTControllerLeavesInvisibleAcceptedDispatchPending(t *testing.T) {
 	api := testGitHubServer(t)
+	api.DispatchWithoutID = true
 	api.DispatchReadMisses = 20
 	ctx := context.Background()
 	result, err := NewController(api.adapter(t)).Handle(ctx, Event{Type: "fix", Actor: "alice", Source: Source{Kind: "comment", ID: 3, Action: "created"}})

@@ -208,6 +208,21 @@ func run(ctx context.Context, args []string) error {
 			summary["phase"] = result.Result.State.Phase
 		}
 	}
+	if dispatch := result.Dispatch; dispatch != nil {
+		summary["dispatch_receipt"] = dispatch.Receipt
+		if dispatch.DispatchHTTPStatus > 0 {
+			summary["dispatch_http_status"] = strconv.Itoa(dispatch.DispatchHTTPStatus)
+		}
+		if dispatch.RunID > 0 {
+			summary["dispatch_run_id"] = strconv.FormatInt(dispatch.RunID, 10)
+		}
+		if dispatch.Readback != "" {
+			summary["dispatch_readback"] = dispatch.Readback
+		}
+		if dispatch.ReadbackHTTPStatus > 0 {
+			summary["dispatch_readback_http_status"] = strconv.Itoa(dispatch.ReadbackHTTPStatus)
+		}
+	}
 	if err := json.NewEncoder(os.Stdout).Encode(summary); err != nil {
 		return err
 	}

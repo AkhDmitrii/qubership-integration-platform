@@ -20,8 +20,17 @@ type GitHubAdapter struct {
 	AllowedActors func(context.Context) (string, error)
 	Mode          string
 	state         *State
-	dispatched    map[string]int64
+	dispatch      *DispatchDiagnostic
 	cancellations map[string]bool
+}
+
+type DispatchDiagnostic struct {
+	executionID        string
+	Receipt            string
+	DispatchHTTPStatus int
+	Readback           string
+	ReadbackHTTPStatus int
+	RunID              int64
 }
 
 func (a *GitHubAdapter) ReadState(ctx context.Context) (StateRead, error) {
@@ -91,9 +100,6 @@ func (a *GitHubAdapter) runFor(ctx context.Context, execution Execution) (*Workf
 			}
 		}
 	}
-	if hint == 0 {
-		hint = a.dispatched[execution.ID]
-	}
 	expected := a.expected(execution)
 	if hint != 0 {
 		var run WorkflowRun
@@ -138,12 +144,16 @@ func (a *GitHubAdapter) Perform(ctx context.Context, effect Effect) error {
 			RunID int64 `json:"workflow_run_id"`
 		}
 		inputs := map[string]string{"issue": strconv.FormatInt(a.Task.IssueNumber, 10), "execution": execution.ID, "generation": strconv.Itoa(execution.Generation), "contract_version": strconv.Itoa(execution.ContractVersion), "trusted_sha": a.expected(*execution).TrustedSHA, "mode": executionMode(execution.Mode)}
-		err := a.Client.Request(ctx, "POST", "/actions/workflows/agent-work.yaml/dispatches", map[string]any{"ref": a.DefaultBranch, "return_run_details": true, "inputs": inputs}, &response)
-		if err == nil {
-			if a.dispatched == nil {
-				a.dispatched = make(map[string]int64)
+		reply, err := a.Client.request(ctx, "POST", "/actions/workflows/agent-work.yaml/dispatches", map[string]any{"ref": a.DefaultBranch, "return_run_details": true, "inputs": inputs}, &response)
+		a.dispatch = &DispatchDiagnostic{executionID: execution.ID, Receipt: "unconfirmed", DispatchHTTPStatus: reply.status}
+		switch {
+		case reply.status >= 200 && reply.status < 300:
+			a.dispatch.Receipt = "acknowledged"
+			if err == nil && response.RunID > 0 {
+				a.dispatch.RunID = response.RunID
 			}
-			a.dispatched[execution.ID] = response.RunID
+		case reply.status >= 400 && reply.status < 500:
+			a.dispatch.Receipt = "rejected"
 		}
 		return err
 	case "cancel":
@@ -169,7 +179,7 @@ func (a *GitHubAdapter) Perform(ctx context.Context, effect Effect) error {
 	}
 }
 
-func (a *GitHubAdapter) observeAcceptedDispatch(ctx context.Context, execution Execution) (*WorkflowRun, error) {
+func (a *GitHubAdapter) findDispatchedRun(ctx context.Context, execution Execution) (*WorkflowRun, error) {
 	readback, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	for _, delay := range []time.Duration{0, 250 * time.Millisecond, 500 * time.Millisecond, time.Second} {
@@ -195,6 +205,40 @@ func (a *GitHubAdapter) observeAcceptedDispatch(ctx context.Context, execution E
 	return nil, nil
 }
 
+func (a *GitHubAdapter) observeDispatch(ctx context.Context, execution Execution) (Observation, error) {
+	diagnostic := a.dispatch
+	if diagnostic == nil || diagnostic.executionID != execution.ID {
+		diagnostic = &DispatchDiagnostic{executionID: execution.ID, Receipt: "unrecorded"}
+		a.dispatch = diagnostic
+	}
+	if diagnostic.Receipt == "rejected" {
+		return Observation{Status: "unknown"}, nil
+	}
+	if diagnostic.Receipt == "acknowledged" && diagnostic.RunID > 0 {
+		// Admission verifies the run's provenance after GitHub exposes its attempt.
+		return Observation{Status: "found", Result: &EffectResult{RunID: diagnostic.RunID, RunAttempt: 1}}, nil
+	}
+	run, err := a.findDispatchedRun(ctx, execution)
+	if err != nil {
+		diagnostic.Readback = "failed"
+		var response *HTTPError
+		if errors.As(err, &response) {
+			diagnostic.ReadbackHTTPStatus = response.Status
+		}
+		return Observation{Status: "unknown"}, err
+	}
+	if run == nil {
+		diagnostic.Readback = "not-visible"
+		if diagnostic.Receipt == "acknowledged" {
+			return Observation{Status: "pending"}, nil
+		}
+		return Observation{Status: "unknown"}, nil
+	}
+	diagnostic.Readback = "observed"
+	diagnostic.RunID = run.ID
+	return Observation{Status: "found", Result: &EffectResult{RunID: run.ID, RunAttempt: run.RunAttempt, Conclusion: run.Conclusion}}, nil
+}
+
 func (a *GitHubAdapter) Observe(ctx context.Context, effect Effect) (Observation, error) {
 	execution, err := a.execution(effect.ExecutionID)
 	if err != nil {
@@ -206,23 +250,17 @@ func (a *GitHubAdapter) Observe(ctx context.Context, effect Effect) (Observation
 	if effect.Kind == "report-pilot" {
 		return a.observePilotReport(ctx, effect)
 	}
-	var run *WorkflowRun
-	_, acknowledged := a.dispatched[execution.ID]
-	if effect.Kind == "dispatch" && acknowledged {
-		run, err = a.observeAcceptedDispatch(ctx, *execution)
-		if err == nil && run == nil {
-			return Observation{Status: "pending"}, nil
-		}
-	} else {
-		run, err = a.runFor(ctx, *execution)
+	if effect.Kind == "dispatch" {
+		return a.observeDispatch(ctx, *execution)
 	}
+	run, err := a.runFor(ctx, *execution)
 	if err != nil {
 		return Observation{Status: "unknown"}, err
 	}
 	if run == nil {
 		return Observation{Status: "unknown"}, nil
 	}
-	if effect.Kind == "dispatch" || run.Status == "completed" {
+	if run.Status == "completed" {
 		return Observation{Status: "found", Result: &EffectResult{RunID: run.ID, RunAttempt: run.RunAttempt, Conclusion: run.Conclusion}}, nil
 	}
 	if a.cancellations[effect.ID] {

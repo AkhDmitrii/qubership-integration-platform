@@ -52,6 +52,7 @@ type ActionResult struct {
 	Outputs    map[string]string
 	Result     *Result
 	Checkpoint *Checkpoint
+	Dispatch   *DispatchDiagnostic
 }
 type Checkpoint struct {
 	SchemaVersion   int           `json:"schemaVersion"`
@@ -426,6 +427,7 @@ func RunAction(ctx context.Context, mode string, cfg ActionConfig) (ActionResult
 			return output, nil
 		}
 		reconciled, err := controller.Reconcile(ctx)
+		output.Dispatch = session.adapter.dispatch
 		if err != nil {
 			return output, err
 		}
@@ -484,6 +486,7 @@ func RunAction(ctx context.Context, mode string, cfg ActionConfig) (ActionResult
 			result, err = controller.Handle(ctx, *event)
 		}
 		output.Result = &result
+		output.Dispatch = session.adapter.dispatch
 		if cfg.IsCompletionEvent() && err == nil && result.Disposition == "ignored" && result.State != nil {
 			err = session.adapter.repairPilotReport(ctx, RunIdentity{RunID: session.run.ID, RunAttempt: session.run.RunAttempt})
 		}
