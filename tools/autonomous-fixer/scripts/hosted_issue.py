@@ -99,7 +99,37 @@ def render_answers(checkpoint):
     return "".join(sections)
 
 
-def snapshot(checkpoint, issue, repository, directory, token, fetch=download):
+def render_revision(revision, checkpoint, repository):
+    command = revision["commentId"]
+    pull = revision["pullNumber"]
+    if revision["head"] != checkpoint["contract"]["baseSha"] or revision["issue"] != checkpoint["issueNumber"]:
+        raise ValueError("The revision does not match the admitted pull request head")
+    origin = revision["originRun"]
+    pr = f"https://github.com/{repository}/pull/{pull}"
+    evidence = f"https://github.com/{repository}/actions/runs/{origin['runId']}/attempts/{origin['runAttempt']}"
+    sections = [
+        "\n## Pull request revision\n",
+        f"\n[Maintainer request]({pr}#issuecomment-{command}) at `{revision['head']}`.\n",
+        f"\n[Initial publication evidence]({evidence}).\n",
+        "\nContinue from the checked-out pull request head. Address the selected feedback, preserve existing work, "
+        "and keep the original issue requirements and approved paths. Reproduce the behavior described in the "
+        "feedback where applicable. Repeat the relevant product checks for the original issue and the revision, "
+        "and ask the reviewer to check both. Leave discussion resolution, pull request status, and merge to the maintainer.\n",
+    ]
+    if instruction := revision.get("instruction"):
+        sections.append("\n### Maintainer instruction\n\n" + "\n".join(f"> {line}" for line in instruction.splitlines()) + "\n")
+    sections.append("\n### Selected feedback\n")
+    for feedback in revision["feedback"]:
+        location = ""
+        if path := feedback.get("path"):
+            line = feedback.get("line")
+            location = f" (`{path}:{line}`)" if line else f" (`{path}`)"
+        excerpt = "\n".join(f"> {line}" for line in feedback["body"].splitlines())
+        sections.append(f"\n[Discussion]({feedback['url']}){location}\n\n{excerpt}\n")
+    return "".join(sections)
+
+
+def snapshot(checkpoint, issue, repository, directory, token, fetch=download, revision=None):
     issue_number = checkpoint["issueNumber"]
     contract = checkpoint["contract"]
     if not REPOSITORY.fullmatch(repository) or type(issue_number) is not int or issue_number < 1:
@@ -147,6 +177,8 @@ def snapshot(checkpoint, issue, repository, directory, token, fetch=download):
         task += "\n## Approved change paths\n\n" + "".join(f"- `{path}`\n" for path in scope_paths)
     task += f"\n## Issue title and description\n\n{requirements}\n"
     task += answers
+    if revision is not None:
+        task += render_revision(revision, checkpoint, repository)
     if answers:
         write_json(directory / "answers.json", checkpoint["answers"])
     if records:
@@ -168,11 +200,20 @@ def main():
     parser.add_argument("checkpoint", type=Path)
     parser.add_argument("issue", type=Path)
     parser.add_argument("assignment", type=Path)
+    parser.add_argument("--revision", type=Path)
     args = parser.parse_args()
     try:
         checkpoint = json.loads(args.checkpoint.read_text(encoding="utf-8"))
         issue = json.loads(args.issue.read_text(encoding="utf-8"))
-        snapshot(checkpoint, issue, os.environ["GITHUB_REPOSITORY"], args.assignment, os.getenv("GH_TOKEN"))
+        revision = None
+        if args.revision is None and "revisionSha256" in checkpoint:
+            raise ValueError("The admitted revision requires its selected feedback")
+        if args.revision is not None:
+            data = args.revision.read_bytes().rstrip(b"\n")
+            if hashlib.sha256(data).hexdigest() != checkpoint.get("revisionSha256"):
+                raise ValueError("The selected feedback differs from the admitted revision")
+            revision = json.loads(data)
+        snapshot(checkpoint, issue, os.environ["GITHUB_REPOSITORY"], args.assignment, os.getenv("GH_TOKEN"), revision=revision)
     except (KeyError, OSError, ValueError) as error:
         parser.exit(1, f"{error}\n")
 

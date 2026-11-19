@@ -28,8 +28,16 @@ admitted_sha=$(jq -er '.base_sha | select(test("^[0-9a-f]{40}$"))' "$pilot/assig
 
 : "${JAVA_HOME:?Set Java 21 before preparing the hosted pilot}"
 : "${GITHUB_RUN_ID:?}" "${GITHUB_RUN_ATTEMPT:?}"
-maven_user=${MAVEN_GITHUB_USERNAME:?Set the Maven GitHub Packages username}
-maven_token=${MAVEN_GITHUB_PASSWORD:?Set the read-only Maven GitHub Packages token}
+if [[ -n "${QIP_PUBLIC_MAVEN_REPOSITORY:-}" ]]; then
+    maven_settings="$HOME/maven-settings.xml"
+    printf '<settings />\n' > "$maven_settings"
+    chmod 400 "$maven_settings"
+    maven_args="-B -Dgpg.skip=true -Dmaven.repo.local=$QIP_PUBLIC_MAVEN_REPOSITORY -s $maven_settings -gs $maven_settings"
+else
+    maven_user=${MAVEN_GITHUB_USERNAME:?Set the Maven GitHub Packages username}
+    maven_token=${MAVEN_GITHUB_PASSWORD:?Set the read-only Maven GitHub Packages token}
+    maven_args="-B -Dgpg.skip=true -Dmaven.repo.local=$HOME/.m2/repository -s $trusted/.github/maven-settings.xml"
+fi
 unset MAVEN_GITHUB_USERNAME MAVEN_GITHUB_PASSWORD
 
 kind_version=$(read_pin KIND_VERSION '^v[0-9]+\.[0-9]+\.[0-9]+$')
@@ -73,10 +81,14 @@ bootstrap_pid=$!
     npx --no-install playwright install --with-deps chromium
 ) 2>&1 | tee "$pilot/preparation/dependencies.log"
 
-maven_args="-B -Dgpg.skip=true -Dmaven.repo.local=$HOME/.m2/repository -s $trusted/.github/maven-settings.xml"
 provisioner="$trusted/tools/autonomous-fixer/scripts/hosted_provision.mjs"
-MAVEN_ARGS="$maven_args" MAVEN_GITHUB_USERNAME="$maven_user" MAVEN_GITHUB_PASSWORD="$maven_token" \
-    node --experimental-transform-types "$provisioner" stand "$candidate" 2>&1 | tee "$pilot/preparation/stand.log"
+if [[ -n "${QIP_PUBLIC_MAVEN_REPOSITORY:-}" ]]; then
+    printf '%s\n' 'Revision preparation uses the restored Maven cache and public repositories. Run QIP agent revision cache on the default branch if a private dependency is missing.'
+    MAVEN_ARGS="$maven_args" node --experimental-transform-types "$provisioner" stand "$candidate" 2>&1 | tee "$pilot/preparation/stand.log"
+else
+    MAVEN_ARGS="$maven_args" MAVEN_GITHUB_USERNAME="$maven_user" MAVEN_GITHUB_PASSWORD="$maven_token" \
+        node --experimental-transform-types "$provisioner" stand "$candidate" 2>&1 | tee "$pilot/preparation/stand.log"
+fi
 wait "$bootstrap_pid"
 
 elapsed=$(($(date +%s) - started))

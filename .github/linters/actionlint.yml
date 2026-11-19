@@ -10,7 +10,7 @@ paths:
     ignore:
       - 'shellcheck reported issue in this script: SC2086:info.+'
       - 'shellcheck reported issue in this script: SC2002:style.+'
-  .github/workflows/agent-{control,work,publish,docs}.yaml:
+  .github/workflows/agent-{ci,control,work,publish,docs,outcome}.yaml:
     ignore:
       # GitHub supports queue; remove this exception when actionlint supports it.
       # Keep all other concurrency errors visible, including cancellation settings.

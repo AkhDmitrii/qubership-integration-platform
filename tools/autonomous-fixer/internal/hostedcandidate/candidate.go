@@ -33,9 +33,14 @@ type Candidate struct {
 var sha = regexp.MustCompile("^[0-9a-f]{40}$")
 
 func git(ctx context.Context, dir, index string, input []byte, args ...string) ([]byte, error) {
+	return gitWithEnv(ctx, dir, index, input, nil, args...)
+}
+
+func gitWithEnv(ctx context.Context, dir, index string, input []byte, environment []string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=/nonexistent", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1", "GIT_LITERAL_PATHSPECS=1"}
+	cmd.Env = append(cmd.Env, environment...)
 	if index != "" {
 		cmd.Env = append(cmd.Env, "GIT_INDEX_FILE="+index)
 	}

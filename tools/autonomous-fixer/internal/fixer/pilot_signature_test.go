@@ -160,7 +160,7 @@ func TestPilotFixedSignatureBindsArtifactAuthorizationAndDraftReceipt(t *testing
 	body := "Closes #1\n\n<!-- qip-fix:1:500:1 -->"
 	api.DraftPullRequest = map[string]any{"number": 10, "state": "open", "draft": true, "body": body,
 		"head": map[string]any{"ref": branch, "sha": sha, "repo": map[string]any{"full_name": api.Repository}},
-		"base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": api.Repository}}}
+		"base": map[string]any{"ref": "main", "sha": checkpoint.Contract.BaseSHA, "repo": map[string]any{"full_name": api.Repository}}}
 	if _, err := RunAction(context.Background(), "confirm-publish", cfg); err == nil {
 		t.Fatal("confirmed a draft without the worker signature")
 	}

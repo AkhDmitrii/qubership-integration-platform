@@ -65,13 +65,16 @@ The native CLI tests compile the executable with a loopback API endpoint and inv
 
 ## GitHub configuration
 
-Four workflows call the binary.
+The engineering pilot and pre-ready triage use the following workflows.
 
 | Workflow | Behavior |
 | --- | --- |
 | `.github/workflows/agent-control.yaml` | Checks pull requests that change this tool; routes issue events and handles worker completion |
 | `.github/workflows/agent-work.yaml` | Admits the exact run and saves its checkpoint. In pilot mode it starts OpenCode, then exports the author result and evidence. |
 | `.github/workflows/agent-publish.yaml` | Verifies a selected pilot candidate and publishes a draft pull request |
+| `.github/workflows/agent-revision-cache.yaml` | Prepares the Maven dependency cache from the default branch for PR revisions. |
+| `.github/workflows/agent-ci.yaml` | Reports check runs and commit statuses on open engineering PRs. |
+| `.github/workflows/agent-outcome.yaml` | Records the final patch comparison when an engineering PR closes. |
 | `.github/workflows/agent-pre-ready.yaml` | Offers read-only triage on issue opening and in authorized manual runs |
 
 Operational jobs require repository variable `AGENT_ENABLED` to equal `true`. Configure `AGENT_ALLOWED_ACTORS` as comma-separated GitHub logins and `AGENT_SCOPE_PATHS` as comma-separated permitted product paths. An empty or malformed allowlist denies every actor. Missing or invalid scope prevents execution. Set the repository variable `AGENT_MODE=pilot` to enable the hosted worker. An unset mode selects `fake`.
@@ -83,6 +86,8 @@ The CLI supports `demo`, `authorize`, `route`, `control`, `admit`, `work`, and `
 Before enabling the workflows, validate repository permissions, workflow concurrency, callback delivery, artifact download provenance, cancellation timing, and recovery after interrupted jobs on GitHub.
 
 ## Commands and task lifecycle
+
+For feedback on an existing engineering PR, see [Request changes in the same PR](HOSTED-PILOT.md#request-changes-in-the-same-pr).
 
 An allowed user starts a task with `/agent fix` or the `ready-for-agent` label. Supported comment commands include `/agent status`, `/agent stop`, `/agent resume`, `/agent retry`, and `/agent answer <question-id> <question-version> <contract-version> <answer>`. The canonical state comment lists open questions and their answer syntax.
 

@@ -141,8 +141,10 @@ func TestPilotRegistersThenPublishesSelectedCandidate(t *testing.T) {
 	cfg.PilotPublication = &PilotPublication{Number: 10, SHA: sha, Branch: branch}
 	api.DraftPullRequest = map[string]any{"number": 10, "state": "open", "draft": true, "html_url": "https://github.com/org/repo/pull/10",
 		"head": map[string]any{"ref": branch, "sha": sha, "repo": map[string]any{"full_name": api.Repository}},
-		"base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": api.Repository}}}
-	if result := actionCall(t, "confirm-publish", cfg); result.Result.State.Phase != "waiting-ci" || result.Result.State.PilotPublication.Number != 10 {
+		"base": map[string]any{"ref": "main", "sha": checkpoint.Contract.BaseSHA, "repo": map[string]any{"full_name": api.Repository}}}
+	if result := actionCall(t, "confirm-publish", cfg); result.Result.State.Phase != "waiting-ci" ||
+		result.Result.State.PilotPublication.Number != 10 || result.Result.State.PilotPublication.BaseRef != "main" ||
+		result.Result.State.PilotPublication.BaseSHA != checkpoint.Contract.BaseSHA {
 		t.Fatal("draft publication was not observed", result)
 	}
 	if route := actionCall(t, "route-publish", manual); route.Outputs["process"] != "false" || route.Result.Disposition != "already-published" {

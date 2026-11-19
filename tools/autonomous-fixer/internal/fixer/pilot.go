@@ -65,10 +65,12 @@ type PilotIssueResult struct {
 }
 
 type PilotPublication struct {
-	Number int64  `json:"number"`
-	SHA    string `json:"sha"`
-	Branch string `json:"branch"`
-	URL    string `json:"url,omitempty"`
+	Number  int64  `json:"number"`
+	SHA     string `json:"sha"`
+	Branch  string `json:"branch"`
+	URL     string `json:"url,omitempty"`
+	BaseRef string `json:"baseRef,omitempty"`
+	BaseSHA string `json:"baseSha,omitempty"`
 }
 
 func validExecutionMode(mode string) bool { return mode == "" || mode == "fake" || mode == "pilot" }

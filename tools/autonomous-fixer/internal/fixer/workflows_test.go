@@ -47,22 +47,71 @@ func TestWorkflowsBuildGoBeforeTokenUse(t *testing.T) {
 				if strings.Count(source, "name: Build agent") != 2 {
 					t.Fatal("each work job must build its binary")
 				}
-				for _, setup := range []string{"actions/setup-node@", "actions/setup-java@", "name: Prepare the product environment", "name: Run the author and reviewer"} {
+				for _, setup := range []string{"actions/setup-node@", "actions/setup-java@", "name: Run the author and reviewer"} {
 					_, rest, found := strings.Cut(source, setup)
 					step, _, _ := strings.Cut(rest, "\n      - ")
 					if !found || !strings.Contains(step, "\n        if: inputs.mode == 'pilot'") {
 						t.Errorf("product step %q must run only in pilot mode", setup)
 					}
 				}
-				_, author, _ := strings.Cut(source, "- name: Run the author and reviewer")
+				worker, publisher, _ := strings.Cut(source, "\n  publish-revision:")
+				_, author, _ := strings.Cut(worker, "- name: Run the author and reviewer")
 				author, _, _ = strings.Cut(author, "- name: Stage pilot evidence")
-				if !strings.Contains(author, "if: inputs.mode == 'pilot'") || !strings.Contains(author, "OPENROUTER_API_KEY:") || strings.Contains(author, "github.token") || strings.Contains(author, "AGENT_VARIABLES_READ_TOKEN") || strings.Contains(source, "AGENT_PUBLICATION_TOKEN") {
+				if !strings.Contains(author, "if: inputs.mode == 'pilot'") || !strings.Contains(author, "OPENROUTER_API_KEY:") || strings.Contains(author, "github.token") || strings.Contains(author, "AGENT_VARIABLES_READ_TOKEN") || strings.Contains(worker, "AGENT_PUBLICATION_TOKEN") {
 					t.Fatal("pilot execution must receive only its model credential")
+				}
+				if !strings.Contains(publisher, "AGENT_PUBLICATION_TOKEN:") || strings.Contains(publisher, "OPENROUTER_API_KEY:") ||
+					!strings.Contains(publisher, "needs: [admit-revision, work]") || !strings.Contains(publisher, "ref: ${{ github.sha }}") ||
+					!strings.Contains(publisher, "agent-pilot-${{ github.run_id }}-1") ||
+					!strings.Contains(worker, "needs.admit-revision.outputs.admitted == 'true' && github.run_attempt == 1") {
+					t.Fatal("the revision publisher must use the admitted workflow and its own credentials")
 				}
 			}
 			if name == "publish" && (!strings.Contains(source, "workflow_call:") || !strings.Contains(source, "steps.authorize.outputs.process == 'true'") || strings.Contains(source, "OPENROUTER_API_KEY")) {
 				t.Fatal("publication requires the trusted authorization step and no model credentials")
 			}
 		})
+	}
+}
+
+func TestRevisionPreparationUsesTheTrustedMavenCacheWithoutCredentials(t *testing.T) {
+	workflows := filepath.Join("..", "..", "..", "..", ".github", "workflows")
+	read := func(name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(workflows, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	work := read("agent-work.yaml")
+	_, prepare, _ := strings.Cut(work, "- name: Prepare the product environment")
+	initial, revision, _ := strings.Cut(prepare, "- name: Prepare the revision environment")
+	revision, _, _ = strings.Cut(revision, "- name: Run the author and reviewer")
+	if !strings.Contains(initial, "github.event_name == 'workflow_dispatch' && inputs.mode == 'pilot'") ||
+		!strings.Contains(initial, "MAVEN_GITHUB_PASSWORD:") {
+		t.Fatal("initial pilot preparation needs its Maven authentication")
+	}
+	if !strings.Contains(revision, "github.event_name == 'issue_comment'") || !strings.Contains(revision, "hosted_prepare_revision.sh") ||
+		strings.Contains(revision, "env:") || strings.Contains(revision, "github.token") || strings.Contains(revision, "secrets.") {
+		t.Fatal("revision preparation must run in its own step without credentials")
+	}
+	prewarm := read("agent-revision-cache.yaml")
+	_, restore, _ := strings.Cut(work, "- name: Restore the Maven repository for the revision")
+	restore, _, _ = strings.Cut(restore, "\n      - ")
+	for _, setting := range []string{
+		"path: ${{ runner.temp }}/qip-revision-maven-repository",
+		"key: maven-${{ runner.os }}-agent-revision-${{ hashFiles('trusted/**/pom.xml') }}",
+	} {
+		if !strings.Contains(prewarm, setting) || !strings.Contains(restore, setting) {
+			t.Errorf("the revision restore and prewarm must share %q", setting)
+		}
+	}
+	for _, required := range []string{"workflow_dispatch:", "github.event.repository.default_branch", "persist-credentials: false",
+		`"$RUNNER_TEMP/qip-agent" authorize`, "working-directory: trusted", "packages: read",
+		"-pl runtime-catalog,engine,sessions-management,micro-engine -am clean install"} {
+		if !strings.Contains(prewarm, required) {
+			t.Errorf("the trusted prewarm needs %q", required)
+		}
 	}
 }

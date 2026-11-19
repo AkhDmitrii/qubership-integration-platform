@@ -24,7 +24,7 @@ Install the workflows, controller, product source and agent skills on the pilot 
 | `AGENT_VARIABLES_READ_TOKEN` | Trusted controller steps. Grant repository Variables read access so the controller can recheck the allowlist and enable flag. |
 | `AGENT_PUBLICATION_TOKEN` | Trusted publication step. Grant Contents and Pull requests write and Issues read on the pilot repository. The publisher creates a branch and draft PR and reads the issue to confirm eligibility. |
 
-If the fork token cannot read the required Maven packages, configure `QIP_PILOT_MAVEN_USERNAME` and the `QIP_PILOT_MAVEN_TOKEN` secret with Packages read access. Only the environment preparation step receives these credentials.
+If the fork token cannot read the required Maven packages for the first issue, configure `QIP_PILOT_MAVEN_USERNAME` and the `QIP_PILOT_MAVEN_TOKEN` secret with Packages read access. The first issue's environment preparation and the trusted revision cache workflow use these credentials.
 
 The inference process uses a loopback relay for its configured models. The real key is kept out of OpenCode's config and ordinary tool environment. Tools still have shell, Docker and Kubernetes access on that runner. The relay does not isolate secrets from a process controlling the host. The credential for publishing the PR belongs to a different job.
 
@@ -37,11 +37,32 @@ The inference process uses a loopback relay for its configured models. The real 
 
 The draft PR draws its verification steps and observed results from the sealed author report. **How to verify** ends with the end-to-end decision. It names the regression test and target when the run needs that coverage, or explains why the change needs no end-to-end case. If an older or incomplete report lacks the decision, the draft says so and links to the worker evidence. A publication retry keeps edits to an existing draft description.
 
+## Request changes in the same PR
+
+Leave a new top-level comment on the published engineering PR. Copy a link to each review comment, submitted review, or PR conversation comment that the author should address. For example:
+
+```text
+/agent revise #discussion_r123456 #issuecomment-234567
+Keep the existing behavior for a chain opened directly from a link.
+```
+
+Select up to five feedback messages from that PR. A link to a submitted review includes its summary and inline comments. Link individual comments to request a smaller batch. Put any extra instruction on the next line. The operator needs repository write access and a place in `AGENT_ALLOWED_ACTORS`. Keep the source issue open and labeled `ready-for-agent`.
+
+Run **QIP agent revision cache** on the pilot repository's default branch to prepare a new fork or recover from a missing private Maven dependency. An allowed operator can run it from Actions. It uses the default-branch checkout and the same read-only Maven package access as the first issue. The workflow stores the four Java services' Maven dependencies under `maven-Linux-agent-revision-<default-branch POM hash>` in that repository's default-branch cache. Revisions can download from public repositories and use this cache. If a revision adds a private dependency unavailable from the default-branch build, preparation stops before the author starts.
+
+The receipt identifies the run and the PR head that the author will work from. Check the resulting commit and its evidence before resolving review threads. If someone pushes a change while the author works, review the new head before requesting another attempt. The branch update requires the expected head and rechecks that the PR is open immediately before pushing. GitHub handles the branch update and PR closure separately. If the publication job fails temporarily, the operator who posted the command can rerun the failed publisher job to reuse the first worker artifact. The maintainer decides when to mark the PR ready and merge it.
+
+## Read CI and the final outcome
+
+**QIP agent CI observation** updates one comment on the open engineering PR. It reads GitHub check runs and commit statuses for the current head and, when available, the test merge. Check the SHA in the report when a new commit arrives. You can set `AGENT_CI_REQUIRED_CHECKS` to a list of expected job or status names, one per line, to supplement the branch rules available to Actions. The observer runs on PR changes and CI completions. A daily scan and manual dispatch can refresh the report if an event was missed. Observation uses no model calls.
+
+**QIP agent PR outcome** records both merged and closed-unmerged PRs. Its comment and Actions artifact identify the published candidate, the last PR head, and the merge commit when applicable. The report timestamps the CI observation because checks can finish or rerun after closure. The comparison uses each version's patch against its own base. Missing historical evidence produces an unknown result. A changed patch can include work by the author, a maintainer, or both. Use the commit and discussion history when attributing a change.
+
 ## What crosses jobs
 
-The worker seals its run identity and author report. For a claimed fix it also packages the candidate's regular-file edits relative to the authorized commit. The publisher verifies the recorded artifact identity and digest, reconstructs the actual tree in a temporary index against the trusted base, checks every changed path against the issue scope, and compares the tree returned by GitHub. It seeds a run-specific branch from an existing base commit and fast-forwards it to the validated candidate. When only the fixer tooling or its three control/work/publish workflows advanced, it can seed from the current tip and replay the same product edits. The PR body records both commits. A repeated publication reads back the same branch and PR. An unrelated commit on the default branch leaves the pinned candidate intact. If the default branch has been rewritten and no longer contains the admitted base, the publisher stops.
+The worker seals its run identity and author report. For a claimed fix it also packages the candidate's regular-file edits relative to the authorized commit. The publisher verifies the recorded artifact identity and digest, reconstructs the actual tree in a temporary index against the trusted base, checks every changed path against the issue scope, and compares the tree returned by GitHub. It seeds a run-specific branch from an existing base commit and fast-forwards it to the validated candidate. When only the fixer tooling or its engineering workflows advanced, it can seed from the current tip and replay the same product edits. The PR body records both commits. A repeated publication reads back the same branch and PR. An unrelated commit on the default branch leaves the pinned candidate intact. If the default branch has been rewritten and no longer contains the admitted base, the publisher stops.
 
-The runner is ephemeral. A restart gets a fresh checkout and stand. The first [fork run](https://github.com/AkhDmitrii/qubership-integration-platform/actions/runs/44315529424) exercised the real stand, author and reviewers. OpenRouter billed $0.35611274 for 74 requests. [Draft PR #2](https://github.com/AkhDmitrii/qubership-integration-platform/pull/2) used the original candidate after an operator reconciled the missing completion notification and retried publication. Test automatic delivery on a new issue before relying on it.
+The runner is ephemeral. A restart gets a fresh checkout and stand. The first [fork run](https://github.com/AkhDmitrii/qubership-integration-platform/actions/runs/44315529424) exercised the real stand, author and reviewers. OpenRouter billed $0.35611274 for 74 requests. [Draft PR #2](https://github.com/AkhDmitrii/qubership-integration-platform/pull/2) used the original candidate after an operator reconciled the missing completion notification and retried publication. A later run on [issue #8](https://github.com/AkhDmitrii/qubership-integration-platform/issues/8) published [draft PR #9](https://github.com/AkhDmitrii/qubership-integration-platform/pull/9). Keep label-to-draft delivery in the smoke test when deploying a new controller version.
 
 ## GitHub result signatures
 

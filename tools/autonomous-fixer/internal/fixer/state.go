@@ -184,8 +184,11 @@ func ValidateState(s *State) error {
 	if s.Phase == "awaiting-publication" && (s.PilotCandidate == nil || s.Desired != "running") {
 		return bad("pilotCandidate.phase")
 	}
-	if s.PilotPublication != nil && (s.PilotPublication.Number <= 0 || !commitPattern.MatchString(s.PilotPublication.SHA) || !strings.HasPrefix(s.PilotPublication.Branch, fmt.Sprintf("agent/fix/%d/", s.IssueNumber))) {
-		return bad("pilotPublication")
+	if p := s.PilotPublication; p != nil {
+		if p.Number <= 0 || !commitPattern.MatchString(p.SHA) || !strings.HasPrefix(p.Branch, fmt.Sprintf("agent/fix/%d/", s.IssueNumber)) ||
+			((p.BaseRef != "" || p.BaseSHA != "") && (!nonempty(p.BaseRef) || !commitPattern.MatchString(p.BaseSHA))) {
+			return bad("pilotPublication")
+		}
 	}
 	return nil
 }

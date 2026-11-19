@@ -393,8 +393,10 @@ func TestControllerOnlyAdvancePublishesTheSameProductEdits(t *testing.T) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "agent-control.yaml"), []byte("controller update"), 0644); err != nil {
-		t.Fatal(err)
+	for _, workflow := range []string{"agent-control.yaml", "agent-outcome.yaml", "agent-ci.yaml", "agent-revision-cache.yaml"} {
+		if err := os.WriteFile(filepath.Join(dir, workflow), []byte("controller update"), 0644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	run("add", ".github")
 	run("-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-qm", "controller update")

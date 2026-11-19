@@ -68,6 +68,7 @@ type Checkpoint struct {
 	TrustedSHA      string        `json:"trustedSha"`
 	Contract        Contract      `json:"contract"`
 	Answers         []PilotAnswer `json:"answers,omitempty"`
+	RevisionSHA256  string        `json:"revisionSha256,omitempty"`
 }
 type actionSession struct {
 	cfg       ActionConfig

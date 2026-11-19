@@ -2,7 +2,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -92,6 +94,51 @@ class HostedIssueTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "different contract version"):
                 hosted_issue.snapshot(checkpoint, issue, REPO, directory, None)
 
+    def test_assignment_requires_the_admitted_revision_feedback(self):
+        checkpoint, issue = admitted_issue("Original acceptance criteria.")
+        pull = f"https://github.com/{REPO}/pull/900"
+        revision = {
+            "head": checkpoint["contract"]["baseSha"],
+            "issue": issue["number"],
+            "commentId": 12,
+            "pullNumber": 900,
+            "originRun": {"runId": 52, "runAttempt": 1},
+            "instruction": "Keep the empty state visible.",
+            "feedback": [{"url": f"{pull}#discussion_r4", "path": "ui/view.ts", "line": 42,
+                          "body": "Preserve the selected row."}],
+        }
+        revision_data = json.dumps(revision).encode()
+        checkpoint["revisionSha256"] = hashlib.sha256(revision_data).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkpoint_path = root / "checkpoint.json"
+            issue_path = root / "issue.json"
+            revision_path = root / "revision.json"
+            assignment = root / "assignment"
+            checkpoint_path.write_text(json.dumps(checkpoint))
+            issue_path.write_text(json.dumps(issue))
+            revision_path.write_bytes(revision_data + b"\n")
+            command = [sys.executable, SCRIPTS / "hosted_issue.py", checkpoint_path, issue_path, assignment]
+            env = {**os.environ, "GITHUB_REPOSITORY": REPO}
+            missing_revision = subprocess.run(command, capture_output=True, env=env, check=False)
+            self.assertEqual(missing_revision.returncode, 1)
+            self.assertIn(b"requires its selected feedback", missing_revision.stderr)
+            subprocess.run([*command, "--revision", revision_path], env=env, check=True)
+            task = (assignment / "task.md").read_text()
+            self.assertIn("Original acceptance criteria.", task)
+            self.assertIn(f"{pull}#issuecomment-12", task)
+            self.assertIn(f"{pull}#discussion_r4", task)
+            self.assertIn("`ui/view.ts:42`", task)
+            self.assertIn("/actions/runs/52/attempts/1", task)
+            self.assertIn("> Keep the empty state visible.", task)
+            self.assertIn("> Preserve the selected row.", task)
+            revision_path.write_bytes(revision_data.replace(b"selected row", b"another row"))
+            command[-1] = root / "tampered"
+            tampered = subprocess.run([*command, "--revision", revision_path], capture_output=True, env=env, check=False)
+            self.assertEqual(tampered.returncode, 1)
+            self.assertIn(b"differs from the admitted revision", tampered.stderr)
+            self.assertFalse(command[-1].exists())
+
     def test_attachments_leave_a_receipt_on_download_failure(self):
         checkpoint, issue = admitted_issue(IMAGE)
 
@@ -121,7 +168,10 @@ class HostedRunnerTest(unittest.TestCase):
     def test_releases_preview_when_the_controller_needs_an_owner(self):
         self.run_fixture("needs-human", 1)
 
-    def run_fixture(self, status, exit_code):
+    def test_revision_prepares_with_an_isolated_environment_and_public_maven_settings(self):
+        self.run_fixture("author-reported-fixed", 0, revision=True)
+
+    def run_fixture(self, status, exit_code, revision=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             trusted = root / "trusted"
@@ -158,13 +208,20 @@ class HostedRunnerTest(unittest.TestCase):
           ISTIO_VERSION: 1.31.1
           ISTIOCTL_SHA256: {pins['istioctl.tar.gz']}
 """)
-            file(trusted / ".github/maven-settings.xml", "<settings />\n")
+            file(trusted / ".github/maven-settings.xml", "<settings><servers>trusted-test-settings</servers></settings>\n")
             file(trusted / "e2e/k8s/bootstrap-cluster.sh", "set -eu\ntest -z \"${MAVEN_GITHUB_PASSWORD:-}\"\nprintf 'fixture' > \"$KUBECONFIG\"\n")
             provisioner = trusted / "tools/autonomous-fixer/scripts/hosted_provision.mjs"
             file(provisioner, (SCRIPTS / "hosted_provision.mjs").read_text())
-            cli("curl", "while [[ $1 != -o ]]; do shift; done\ncp \"$FIXTURE_DOWNLOADS/$2\" \"$2\"\n")
-            cli("npm", "test -z \"${MAVEN_GITHUB_PASSWORD:-}\"\n")
-            cli("npx", "test -z \"${MAVEN_GITHUB_PASSWORD:-}\"\n")
+            cli("curl", f'while [[ $1 != -o ]]; do shift; done\ncp {shlex.quote(str(downloads))}/"$2" "$2"\n')
+            npm_check = 'test -z "${MAVEN_GITHUB_PASSWORD:-}"\n'
+            if revision:
+                npm_check += """test -z "${GITHUB_TOKEN:-}${GH_TOKEN:-}${NODE_AUTH_TOKEN:-}${AGENT_PUBLICATION_TOKEN:-}${AGENT_VARIABLES_READ_TOKEN:-}"
+test -z "${NPM_CONFIG_USERCONFIG:-}${MAVEN_ARGS:-}${MAVEN_OPTS:-}${GIT_CONFIG_COUNT:-}"
+test ! -f "$HOME/.npmrc"
+test ! -f "$HOME/.m2/settings.xml"
+"""
+            cli("npm", npm_check)
+            cli("npx", npm_check)
             cli("opencode", "test -z \"${OPENROUTER_API_KEY:-}\"\necho 'opencode v2.2.6'\n")
             cli("work", """
 test "$OPENROUTER_API_KEY" = provider-fixture
@@ -176,12 +233,30 @@ mkdir "$result"
 """ + f"printf '%s\\n' '{json.dumps({'status': status})}' > \"$result/report.json\"\nexit {exit_code}\n")
             file(workspace / "e2e/package.json", '{"type":"module"}\n')
             file(workspace / "e2e/env/provision/check.ts", "export const expected = 'read-fixture';\n")
+            maven_check = "assert.equal(process.env.MAVEN_GITHUB_PASSWORD, expected);"
+            if revision:
+                maven_check = """
+  for (const name of ['MAVEN_GITHUB_USERNAME', 'MAVEN_GITHUB_PASSWORD', 'GITHUB_TOKEN', 'GH_TOKEN',
+                      'NODE_AUTH_TOKEN', 'AGENT_PUBLICATION_TOKEN', 'AGENT_VARIABLES_READ_TOKEN', 'MAVEN_OPTS',
+                      'GIT_CONFIG_COUNT', 'NPM_CONFIG_USERCONFIG']) {
+    assert.equal(process.env[name], undefined);
+  }
+  const args = process.env.MAVEN_ARGS.split(' ');
+  const settings = args[args.indexOf('-s') + 1];
+  assert.equal(settings, process.env.HOME + '/maven-settings.xml');
+  assert.equal(settings, args[args.indexOf('-gs') + 1]);
+  assert.equal(readFileSync(settings, 'utf8'), '<settings />\\n');
+  assert.equal(statSync(settings).mode & 0o777, 0o400);
+  const repository = args.find(arg => arg.startsWith('-Dmaven.repo.local=')).split('=')[1];
+  assert.equal(readFileSync(repository + '/cached-dependency', 'utf8'), 'cached');
+"""
             file(workspace / "e2e/env/provision/k8s.ts", """
 import assert from 'node:assert/strict';
+import { readFileSync, statSync } from 'node:fs';
 import { expected } from './check.js';
 export async function provisionK8s(mode: string) {
   assert.equal(mode, 'auto');
-  assert.equal(process.env.MAVEN_GITHUB_PASSWORD, expected);
+""" + maven_check + """
   assert.equal(process.env.E2E_BUILD, 'all');
   return { fixture: 'ready' };
 }
@@ -203,9 +278,17 @@ export async function releaseUiServer(owner: number) {
 }
 """)
 
-            environment = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "FIXTURE_DOWNLOADS": str(downloads),
+            environment = {**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
                            "HOME": str(root / "home"), "JAVA_HOME": str(root / "java"), "GITHUB_RUN_ID": "20",
                            "GITHUB_RUN_ATTEMPT": "1", "MAVEN_GITHUB_USERNAME": "fixture", "MAVEN_GITHUB_PASSWORD": "read-fixture"}
+            if revision:
+                file(root / "home/.npmrc", "npm-initial-dummy")
+                file(root / "home/.m2/settings.xml", "<settings><servers>initial-dummy</servers></settings>")
+                file(root / "runner/qip-revision-maven-repository/cached-dependency", "cached")
+                environment.update(RUNNER_TEMP=str(root / "runner"), GITHUB_TOKEN="github-dummy", GH_TOKEN="gh-dummy",
+                                   NODE_AUTH_TOKEN="npm-dummy", MAVEN_ARGS="-s original-settings", MAVEN_OPTS="maven-dummy",
+                                   NPM_CONFIG_USERCONFIG=str(root / "home/.npmrc"), AGENT_PUBLICATION_TOKEN="publication-dummy",
+                                   AGENT_VARIABLES_READ_TOKEN="variables-dummy", GIT_CONFIG_COUNT="0")
             execute("git", "init", "-q", cwd=workspace)
             execute("git", "add", ".", cwd=workspace)
             execute("git", "-c", "user.email=fixture@example.com", "-c", "user.name=Fixture", "commit", "-qm", "Fixture", cwd=workspace)
@@ -213,10 +296,15 @@ export async function releaseUiServer(owner: number) {
             checkpoint, issue = admitted_issue(sha=sha)
             hosted_issue.snapshot(checkpoint, issue, REPO, assignment, None)
 
-            execute("bash", SCRIPTS / "hosted_prepare.sh", trusted, workspace, pilot)
+            prepare = "hosted_prepare_revision.sh" if revision else "hosted_prepare.sh"
+            execute("bash", SCRIPTS / prepare, trusted, workspace, pilot)
             runner = (pilot / "runner.json").read_text()
             self.assertIn("kind-qip-20-1", runner)
             self.assertNotIn("read-fixture", runner)
+            if revision:
+                self.assertNotIn("dummy", runner)
+                self.assertIn("qip-revision-maven-repository", runner)
+                self.assertIn(" -gs ", runner)
             self.assertEqual((pilot / "kubeconfig").read_text(), "fixture")
             environment.update(OPENROUTER_API_KEY="provider-fixture", GH_TOKEN="must-not-leak", GITHUB_TOKEN="must-not-leak",
                                QIP_PILOT_MODEL="openrouter/openai/gpt-6-luna", QIP_PILOT_REVIEW_MODEL="openrouter/openai/gpt-6-luna")

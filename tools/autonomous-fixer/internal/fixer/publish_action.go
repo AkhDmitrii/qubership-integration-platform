@@ -198,20 +198,24 @@ func (s *actionSession) confirmPilotPublication(ctx context.Context, candidate P
 		} `json:"head"`
 		Base struct {
 			Ref  string     `json:"ref"`
+			SHA  string     `json:"sha"`
 			Repo Repository `json:"repo"`
 		} `json:"base"`
 	}
 	if err := s.cfg.Client.Request(ctx, "GET", fmt.Sprintf("/pulls/%d", publication.Number), nil, &pr); err != nil {
 		return err
 	}
-	if pr.Number != publication.Number || pr.State != "open" || !pr.Draft || pr.Head.Ref != publication.Branch || pr.Head.SHA != publication.SHA || pr.Head.Repo.FullName != s.state.Repository || pr.Base.Ref != s.repo.DefaultBranch || pr.Base.Repo.FullName != s.state.Repository {
+	if pr.Number != publication.Number || pr.State != "open" || !pr.Draft || pr.Head.Ref != publication.Branch || pr.Head.SHA != publication.SHA || pr.Head.Repo.FullName != s.state.Repository || pr.Base.Ref != s.repo.DefaultBranch || pr.Base.Repo.FullName != s.state.Repository || !commitPattern.MatchString(pr.Base.SHA) {
 		return fmt.Errorf("the draft pull request differs from the publication receipt")
 	}
 	if candidate.Signature != nil && candidate.Signature.Append(pr.Body) != pr.Body {
 		return fmt.Errorf("the draft pull request signature differs from the worker result")
 	}
 	next := cloneState(s.state)
-	next.PilotPublication = &PilotPublication{Number: pr.Number, Branch: pr.Head.Ref, SHA: pr.Head.SHA, URL: pr.URL}
+	next.PilotPublication = &PilotPublication{
+		Number: pr.Number, Branch: pr.Head.Ref, SHA: pr.Head.SHA, URL: pr.URL,
+		BaseRef: pr.Base.Ref, BaseSHA: pr.Base.SHA,
+	}
 	next.Phase = "waiting-ci"
 	next.Revision++
 	writeErr := s.adapter.WriteState(ctx, next)
