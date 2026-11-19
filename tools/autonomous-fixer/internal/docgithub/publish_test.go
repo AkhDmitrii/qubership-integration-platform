@@ -23,6 +23,7 @@ type publicationAPI struct {
 	dropComment                                      bool
 	plan                                             Plan
 	state, project, head, branch                     string
+	mergeSHA, mergeHead                              string
 	comments                                         []issueComment
 	pr                                               *pullRequest
 	commentCreates, prCreates, closeCalls, doneCalls int
@@ -64,6 +65,17 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 			write(map[string]any{"data": map[string]any{"updateProjectV2ItemFieldValue": map[string]any{"projectV2Item": map[string]string{"id": "ITEM"}}}})
 		case strings.Contains(request.Query, "projectV2(number"):
 			write(map[string]any{"data": map[string]any{"repository": map[string]any{"owner": map[string]any{"projectV2": map[string]any{"id": "PROJECT", "fields": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"id": "FIELD", "name": "Status", "options": []any{map[string]string{"id": "REVIEW", "name": "In doc review"}, map[string]string{"id": "DONE", "name": "Done"}}}}}}}}, "node": map[string]any{"projectItems": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"id": "ITEM", "project": map[string]string{"id": "PROJECT"}, "fieldValueByName": map[string]any{"optionId": a.project, "field": map[string]string{"id": "FIELD"}}}}}}}})
+		case strings.Contains(request.Query, "pullRequest(number:"):
+			if a.pr == nil || request.Variables["number"] != float64(a.pr.Number) || request.Variables["owner"] != "org" || request.Variables["repo"] != "repo" {
+				fail()
+				return
+			}
+			head := a.pr.Head.SHA
+			if a.mergeHead != "" {
+				head = a.mergeHead
+			}
+			pr := map[string]any{"number": a.pr.Number, "merged": a.pr.Merged, "headRefOid": head, "baseRefName": a.pr.Base.Ref, "mergeCommit": map[string]string{"oid": a.mergeSHA}}
+			write(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": pr}}})
 		case strings.Contains(request.Query, "timelineItems"):
 			pr := map[string]any{"number": 2, "merged": true, "baseRefName": "main", "repository": map[string]string{"nameWithOwner": "org/repo"}, "mergeCommit": map[string]string{"oid": a.plan.BaseSHA}, "closingIssuesReferences": map[string]any{"nodes": []any{map[string]int{"number": 1}}, "pageInfo": map[string]bool{"hasNextPage": false}}}
 			write(map[string]any{"data": map[string]any{"repository": map[string]any{"issue": map[string]any{"timelineItems": map[string]any{"pageInfo": map[string]bool{"hasNextPage": false}, "nodes": []any{map[string]any{"closer": pr}}}}}}})
@@ -303,8 +315,8 @@ func TestDocsPRWaitsForMergeAndRecoversUncertainCreate(t *testing.T) {
 	}
 	a.pr.Merged = true
 	a.pr.State = "closed"
-	a.pr.MergeCommitSHA = strings.Repeat("f", 40)
-	a.head = a.pr.MergeCommitSHA
+	a.mergeSHA = strings.Repeat("f", 40)
+	a.head = strings.Repeat("9", 40)
 	for i := 0; i < 2; i++ {
 		result, e := Reconcile(context.Background(), c, plan, PublishOptions{Actor: "alice", Apply: true})
 		if e != nil || result.Status != "completed" {
@@ -315,6 +327,38 @@ func TestDocsPRWaitsForMergeAndRecoversUncertainCreate(t *testing.T) {
 		t.Fatal("merge completion repeated the signature or updated the PR")
 	}
 }
+
+func TestReconcileRejectsInconsistentMergeEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		mergeSHA string
+		headSHA  string
+	}{
+		{name: "missing merge commit"},
+		{name: "invalid merge commit", mergeSHA: "invalid"},
+		{name: "different pull request head", mergeSHA: strings.Repeat("f", 40), headSHA: strings.Repeat("c", 40)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan, run, _ := publicationFixture(t, true)
+			c, api := apiFixture(t, plan)
+			options := PublishOptions{Actor: "alice", Apply: true}
+			if _, err := Publish(context.Background(), c, plan, run, options); err != nil {
+				t.Fatal(err)
+			}
+			api.pr.Merged = true
+			api.pr.State = "closed"
+			api.mergeSHA = test.mergeSHA
+			api.mergeHead = test.headSHA
+			if _, err := Reconcile(context.Background(), c, plan, options); err == nil {
+				t.Fatal("reconciliation accepted inconsistent merge evidence")
+			}
+			if api.closeCalls != 0 || api.doneCalls != 0 {
+				t.Fatal("inconsistent merge evidence completed the documentation task")
+			}
+		})
+	}
+}
+
 func TestDryRunAndClosedUnmergedPR(t *testing.T) {
 	plan, run, _ := publicationFixture(t, true)
 	c, a := apiFixture(t, plan)
@@ -446,8 +490,8 @@ func TestReconcileAllowsAppendedHelpCorrections(t *testing.T) {
 	}
 	a.pr.Merged = true
 	a.pr.State = "closed"
-	a.pr.MergeCommitSHA = strings.Repeat("f", 40)
-	a.head = a.pr.MergeCommitSHA
+	a.mergeSHA = strings.Repeat("f", 40)
+	a.head = a.mergeSHA
 	result, err := Reconcile(context.Background(), c, plan, PublishOptions{Actor: "alice", Apply: true})
 	if err != nil || result.Status != "completed" || !result.UpdatedAfterPublication || result.MergedHeadSHA != corrected || result.CommitSHA != original.CommitSHA || result.CandidateDigest != original.CandidateDigest || a.doneCalls != 1 {
 		t.Fatal(result, err)
@@ -485,8 +529,8 @@ func TestReconcileRejectsRewrittenOrOutOfScopeCorrections(t *testing.T) {
 			a.pr.Head.SHA = strings.Repeat("e", 40)
 			a.pr.Merged = true
 			a.pr.State = "closed"
-			a.pr.MergeCommitSHA = strings.Repeat("f", 40)
-			a.head = a.pr.MergeCommitSHA
+			a.mergeSHA = strings.Repeat("f", 40)
+			a.head = a.mergeSHA
 			switch change {
 			case "closing_keyword":
 				a.pr.Body += "\nCloses: #1"

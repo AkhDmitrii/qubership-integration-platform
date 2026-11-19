@@ -13,13 +13,12 @@ type pullRequest struct {
 	User         struct {
 		Login string `json:"login"`
 	} `json:"user"`
-	Number         int    `json:"number"`
-	State          string `json:"state"`
-	Body           string `json:"body"`
-	HTMLURL        string `json:"html_url"`
-	Merged         bool   `json:"merged"`
-	MergeCommitSHA string `json:"merge_commit_sha"`
-	Head           struct {
+	Number  int    `json:"number"`
+	State   string `json:"state"`
+	Body    string `json:"body"`
+	HTMLURL string `json:"html_url"`
+	Merged  bool   `json:"merged"`
+	Head    struct {
 		SHA  string `json:"sha"`
 		Ref  string `json:"ref"`
 		Repo struct {
@@ -33,6 +32,33 @@ type pullRequest struct {
 			FullName string `json:"full_name"`
 		} `json:"repo"`
 	} `json:"base"`
+}
+
+func (c *Client) documentationMergeCommit(ctx context.Context, pr pullRequest) (string, error) {
+	const query = `query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){number merged headRefOid baseRefName mergeCommit{oid}}}}`
+	var data struct {
+		Repository struct {
+			PullRequest struct {
+				Number      int
+				Merged      bool
+				HeadRefOID  string
+				BaseRefName string
+				MergeCommit struct{ OID string }
+			}
+		}
+	}
+	owner, repo, _ := strings.Cut(c.Repository, "/")
+	if err := c.GraphQL(ctx, query, map[string]any{"owner": owner, "repo": repo, "number": pr.Number}, &data); err != nil {
+		return "", err
+	}
+	merged := data.Repository.PullRequest
+	if !merged.Merged || merged.Number != pr.Number || merged.HeadRefOID != pr.Head.SHA || merged.BaseRefName != pr.Base.Ref {
+		return "", fmt.Errorf("documentation merge differs from the verified pull request")
+	}
+	if !validCommitSHA.MatchString(merged.MergeCommit.OID) {
+		return "", fmt.Errorf("merged documentation PR has no valid merge identity")
+	}
+	return merged.MergeCommit.OID, nil
 }
 
 func (p *publisher) revalidate(ctx context.Context, mergeSHA string) (Current, error) {
@@ -138,7 +164,7 @@ func Reconcile(ctx context.Context, c *Client, plan Plan, options PublishOptions
 	if e = c.Request(ctx, "GET", fmt.Sprintf("/pulls/%d", p.state.PRNumber), nil, &pr); e != nil {
 		return p.state, e
 	}
-	if pr.Head.Ref != p.state.Branch || pr.Base.Ref != plan.DefaultBranch || pr.Head.Repo.FullName != plan.Repository || pr.Base.Repo.FullName != plan.Repository || !strings.Contains(pr.Body, marker(plan)) {
+	if pr.Number != p.state.PRNumber || pr.Head.Ref != p.state.Branch || pr.Base.Ref != plan.DefaultBranch || pr.Head.Repo.FullName != plan.Repository || pr.Base.Repo.FullName != plan.Repository || !strings.Contains(pr.Body, marker(plan)) {
 		return p.state, fmt.Errorf("documentation PR no longer matches publication state")
 	}
 	if e = verifyDocumentationHead(ctx, c, pr, p.state.CommitSHA); e != nil {
@@ -175,10 +201,11 @@ func Reconcile(ctx context.Context, c *Client, plan Plan, options PublishOptions
 		}
 		return p.state, nil
 	}
-	if pr.MergeCommitSHA == "" {
-		return p.state, fmt.Errorf("merged PR has no merge identity")
+	mergeSHA, e := c.documentationMergeCommit(ctx, pr)
+	if e != nil {
+		return p.state, e
 	}
-	current, e := RevalidateMerged(ctx, c, plan, pr.MergeCommitSHA)
+	current, e := RevalidateMerged(ctx, c, plan, mergeSHA)
 	if e != nil {
 		return p.state, e
 	}
@@ -197,7 +224,7 @@ func Reconcile(ctx context.Context, c *Client, plan Plan, options PublishOptions
 	if e = p.saveState(ctx, state); e != nil {
 		return p.state, e
 	}
-	e = p.complete(ctx, pr.MergeCommitSHA)
+	e = p.complete(ctx, mergeSHA)
 	return p.state, e
 }
 

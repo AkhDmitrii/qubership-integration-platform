@@ -9,12 +9,13 @@ import (
 	"strings"
 )
 
+var validCommitSHA = regexp.MustCompile(`^[a-f0-9]{40}$`)
+
 func verifyDocumentationHead(ctx context.Context, c *Client, pr pullRequest, originalSHA string) error {
 	if err := validateDocumentationPRBody(pr.Body); err != nil {
 		return err
 	}
-	validSHA := regexp.MustCompile(`^[a-f0-9]{40}$`)
-	if !validSHA.MatchString(originalSHA) || !validSHA.MatchString(pr.Head.SHA) {
+	if !validCommitSHA.MatchString(originalSHA) || !validCommitSHA.MatchString(pr.Head.SHA) {
 		return fmt.Errorf("documentation PR has an invalid commit identity")
 	}
 	if originalSHA != pr.Head.SHA {
@@ -59,7 +60,7 @@ func verifyDocumentationHead(ctx context.Context, c *Client, pr pullRequest, ori
 	if err = c.Request(ctx, "GET", fmt.Sprintf("/pulls/%d", pr.Number), nil, &observed); err != nil {
 		return err
 	}
-	if observed.Head.SHA != pr.Head.SHA || observed.Head.Ref != pr.Head.Ref || observed.Head.Repo.FullName != pr.Head.Repo.FullName || observed.Base.Ref != pr.Base.Ref || observed.Base.Repo.FullName != pr.Base.Repo.FullName || observed.Body != pr.Body || observed.ChangedFiles != pr.ChangedFiles || observed.State != pr.State || observed.Merged != pr.Merged || observed.MergeCommitSHA != pr.MergeCommitSHA {
+	if observed.Number != pr.Number || observed.Head.SHA != pr.Head.SHA || observed.Head.Ref != pr.Head.Ref || observed.Head.Repo.FullName != pr.Head.Repo.FullName || observed.Base.Ref != pr.Base.Ref || observed.Base.Repo.FullName != pr.Base.Repo.FullName || observed.Body != pr.Body || observed.ChangedFiles != pr.ChangedFiles || observed.State != pr.State || observed.Merged != pr.Merged {
 		return fmt.Errorf("documentation PR changed while its commits and files were checked")
 	}
 	return nil
