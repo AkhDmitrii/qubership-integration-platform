@@ -108,6 +108,7 @@ describe("DocumentationSearch", () => {
 
   it("announces an empty Help search to screen readers", async () => {
     render(<DocumentationSearch />);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
     await typeAndSearch("nonexistent");
 
     expect(screen.getByRole("status")).toHaveTextContent(
