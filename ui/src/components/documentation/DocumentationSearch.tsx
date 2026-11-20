@@ -34,6 +34,9 @@ export const DocumentationSearch: React.FC<DocumentationSearchProps> = ({
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [searchOutcome, setSearchOutcome] = useState<
+    "idle" | "success" | "failed"
+  >("idle");
   const [searchDetails, setSearchDetails] = useState<
     Record<number, HighlightSegment[][]>
   >({});
@@ -46,6 +49,10 @@ export const DocumentationSearch: React.FC<DocumentationSearchProps> = ({
   >({});
   const [didYouMean, setDidYouMean] = useState<string | null>(null);
   const latestOnly = useMemo(() => createLatestOnlyGuard(), []);
+  const updateQuery = useCallback((value: string) => {
+    setSearchOutcome("idle");
+    setQuery(value);
+  }, []);
 
   const runSearch = useCallback(
     async (token: number, trimmed: string) => {
@@ -123,12 +130,14 @@ export const DocumentationSearch: React.FC<DocumentationSearchProps> = ({
           }
         }
         setSearchDetails(details);
+        setSearchOutcome("success");
       } catch (error) {
         if (!latestOnly.isLatest(token)) {
           return;
         }
         console.error("Search failed:", error);
         setResults([]);
+        setSearchOutcome("failed");
         setSearchDetails({});
         setTitlesByRef({});
         setBreadcrumbsByRef({});
@@ -203,6 +212,8 @@ export const DocumentationSearch: React.FC<DocumentationSearchProps> = ({
     () => results.filter((item) => titlesByRef[item.ref]),
     [results, titlesByRef],
   );
+  const showEmptySearchState =
+    !isLoading && Boolean(query.trim()) && displayResults.length === 0;
 
   return (
     <div className={styles.container}>
@@ -210,7 +221,7 @@ export const DocumentationSearch: React.FC<DocumentationSearchProps> = ({
         placeholder="Search documentation..."
         prefix={<OverridableIcon name="search" />}
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => updateQuery(e.target.value)}
         allowClear
         size="small"
       />
@@ -226,7 +237,7 @@ export const DocumentationSearch: React.FC<DocumentationSearchProps> = ({
             <Text
               italic
               className={styles.didYouMeanTerm}
-              onClick={() => setQuery(didYouMean)}
+              onClick={() => updateQuery(didYouMean)}
             >
               {didYouMean}
             </Text>
@@ -294,11 +305,23 @@ export const DocumentationSearch: React.FC<DocumentationSearchProps> = ({
           }}
         />
       )}
-      {!isLoading && query.trim() && displayResults.length === 0 && (
+      {showEmptySearchState && searchOutcome === "failed" && (
         <div className={styles.emptyState}>
-          <Text type="secondary">No matching help topics</Text>
+          <Text type="secondary">No results found</Text>
         </div>
       )}
+      <div
+        className={
+          showEmptySearchState && searchOutcome === "success"
+            ? styles.emptyState
+            : undefined
+        }
+        role="status"
+      >
+        {showEmptySearchState && searchOutcome === "success" && (
+          <Text type="secondary">No matching help topics</Text>
+        )}
+      </div>
     </div>
   );
 };
