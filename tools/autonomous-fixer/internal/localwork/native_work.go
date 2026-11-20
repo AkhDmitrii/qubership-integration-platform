@@ -63,6 +63,8 @@ Name any generated contract change, changed test expectation, or decision the ma
 
 The supplied task and worktree replace GitHub intake and worktree creation. Use the allocated product environment. Follow the skill through engineering verification and review. %s Assign focused, read-only review questions. You own the patch, checks, and decisions on findings.
 
+When the patch changes precedence, import behavior, or reference resolution, ask the correctness reviewer to state one invariant from the contract and choose two small inputs that test it. For example, if object key order has no meaning, swap two keys and compare the resolved definitions. Use existing test results if they cover that pair. Otherwise, run both inputs through the changed code and report the expected relationship and the two observed results.
+
 %s
 %s
 Keep the patch in this worktree and save useful evidence under %q. This local run ends with a report. Do not commit, push, publish, write to GitHub, or remove the worktree.
