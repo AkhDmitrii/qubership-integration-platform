@@ -35,6 +35,8 @@ The inference process uses a loopback relay for its configured models. The real 
 3. Inspect the worker's preparation and author result. An `author-reported-fixed` outcome means the author reports that the checks and reviews completed. The draft and evidence are available for human review. If the author needs a decision, answer the versioned question in the issue. A new execution starts with the recorded answer. Use `/agent stop` to stop work.
 4. With automatic publication enabled, the trusted worker completion leads to a draft PR. For manual publication, dispatch **QIP agent publish** with the issue number and exact candidate run and attempt. Inspect the changed files, evidence and ordinary PR CI before merging.
 
+If OpenCode exits with an error, download the worker's `agent-pilot-evidence` artifact and open `result/step-0001-author/runtime-failure.json`. It records the exit code, recognized stderr signals, and the last recognized OpenCode error or HTTP status found in the captured output. If the output contains no recognized cause, the report marks the reason as unknown. A nonzero exit still prevents publication even when the author's final line says `Outcome: fixed`.
+
 The draft PR draws its verification steps and observed results from the sealed author report. **How to verify** ends with the end-to-end decision. It names the regression test and target when the run needs that coverage, or explains why the change needs no end-to-end case. If an older or incomplete report lacks the decision, the draft says so and links to the worker evidence. A publication retry keeps edits to an existing draft description.
 
 ## Request changes in the same PR

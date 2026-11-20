@@ -112,6 +112,31 @@ func TestHostedOpenCodeRequiresExplicitProviderProfiles(t *testing.T) {
 	}
 }
 
+func TestHostedFixIssueRejectsNonzeroExitAfterFixedOutcome(t *testing.T) {
+	cfg := hostedOpenCodeFixture(t)
+	t.Setenv("OPENROUTER_API_KEY", "fixture-secret")
+	script := `#!/bin/sh
+if [ "$1" = '--version' ]; then echo 'fixture runtime'; exit; fi
+printf '%s\n' '{"type":"text","sessionID":"fixture","part":{"type":"text","messageID":"message","text":"Outcome: fixed"}}'
+printf '%s\n' '{"type":"error","sessionID":"fixture","error":{"type":"provider.rate-limit","status":429,"message":"private response"}}'
+exit 1
+`
+	if err := os.WriteFile(cfg.RuntimeBinary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Execute(context.Background(), cfg)
+	if err == nil || report.Status != "execution-failed" || report.Successful() || report.Summary != "Outcome: fixed" ||
+		report.Error != "exit status 1" {
+		t.Fatal(report, err)
+	}
+	var process experimentruntime.Result
+	dir := filepath.Join(cfg.OutputDirectory, "step-0001-author")
+	readAgentJSON(t, filepath.Join(dir, "process.json"), &process)
+	if process.ExitCode != 1 || process.Classification != "process_error" {
+		t.Fatal(process)
+	}
+}
+
 func TestOpenRouterRelayForwardsOnlyDeclaredModelsAndRoutes(t *testing.T) {
 	cfg := hostedOpenCodeFixture(t)
 	pending := make(chan string, 8)

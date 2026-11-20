@@ -19,6 +19,33 @@ MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 96 * 1024 * 1024
 MAX_ENTRIES = 2000
 MAX_DEPTH = 12
+DIAGNOSTIC_TAIL_BYTES = 1024 * 1024
+PROCESS_FAILURES = {"process_error", "start_error", "canceled", "capture_error"}
+OPENCODE_ERROR_TYPES = {
+    "aborted", "permission.rejected", "tool.execution",
+    "provider.auth", "provider.budget-limit", "provider.chatgpt-limit", "provider.content-filter",
+    "provider.free-limit", "provider.go-limit", "provider.internal", "provider.invalid-output",
+    "provider.invalid-request", "provider.model-budget-limit", "provider.no-route", "provider.quota",
+    "provider.rate-limit", "provider.timeout", "provider.transport", "provider.unknown",
+    "provider.unsupported-operation",
+}
+OPENCODE_ERROR_MESSAGES = {
+    "Prompt was not promoted": "prompt-not-promoted",
+    "Session ended without a recorded outcome": "missing-session-outcome",
+    "Session failed": "session-failed",
+}
+STDERR_SIGNALS = {
+    b"event stream disconnected": "event-stream-disconnected",
+    b"econnrefused": "connection-refused",
+    b"econnreset": "connection-reset",
+    b"eaddrinuse": "address-in-use",
+    b"etimedout": "connection-timeout",
+    b"enospc": "no-space",
+    b"eacces": "permission-denied",
+    b"out of memory": "out-of-memory",
+    b"sqlite_busy": "database-busy",
+    b"sqlite_corrupt": "database-corrupt",
+}
 
 
 @contextmanager
@@ -48,6 +75,36 @@ def private_name(name):
     )
 
 
+def json_object(data):
+    try:
+        parsed = json.loads(data)
+    except (ValueError, RecursionError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def last_opencode_error(data):
+    for line in reversed(data.split(b"\n")):
+        if b'"error"' not in line:
+            continue
+        event = json_object(line)
+        if event.get("type") != "error":
+            continue
+        error = event.get("error")
+        if not isinstance(error, dict):
+            return {"type": "unknown"}
+        kind = error.get("type")
+        result = {"type": kind if isinstance(kind, str) and kind in OPENCODE_ERROR_TYPES else "unknown"}
+        message = error.get("message")
+        if isinstance(message, str) and message in OPENCODE_ERROR_MESSAGES:
+            result["reason"] = OPENCODE_ERROR_MESSAGES[message]
+        status = error.get("status")
+        if type(status) is int and 100 <= status <= 599:
+            result["http_status"] = status
+        return result
+    return None
+
+
 class Evidence:
     def __init__(self, destination):
         self.destination = destination
@@ -69,15 +126,14 @@ class Evidence:
             with os.fdopen(fd, "wb") as output:
                 output.write(data)
 
-    def file(self, root, path):
+    def read(self, root, path, limit, *, tail=False):
         name = path[-1]
-        limit = min(MAX_FILE_BYTES, MAX_ARCHIVE_BYTES - self.bytes)
         try:
             stated = os.stat(name, dir_fd=root, follow_symlinks=False)
             if not stat.S_ISREG(stated.st_mode) or stated.st_nlink != 1:
                 self.omit(path, "non_regular_or_linked")
                 return
-            if stated.st_size > limit:
+            if not tail and stated.st_size > limit:
                 self.omit(path, "size_limit")
                 return
             fd = os.open(name, FILE_FLAGS, dir_fd=root)
@@ -86,6 +142,8 @@ class Evidence:
                 if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or not os.path.samestat(stated, opened):
                     self.omit(path, "changed_during_read")
                     return
+                if tail and opened.st_size > limit:
+                    source.seek(-limit, os.SEEK_END)
                 data = source.read(limit + 1)
         except FileNotFoundError:
             return
@@ -95,6 +153,22 @@ class Evidence:
         if len(data) > limit:
             self.omit(path, "size_limit")
             return
+        return data, opened.st_size
+
+    def record(self, path, data):
+        if len(data) > min(MAX_FILE_BYTES, MAX_ARCHIVE_BYTES - self.bytes):
+            self.omit(path, "size_limit")
+            return
+        self.save(path, data)
+        self.bytes += len(data)
+        self.files.append({"path": "/".join(path), "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+
+    def file(self, root, path):
+        name = path[-1]
+        captured = self.read(root, path, min(MAX_FILE_BYTES, MAX_ARCHIVE_BYTES - self.bytes))
+        if captured is None:
+            return
+        data, _ = captured
         if data.startswith((b"SQLite format 3\x00", b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83")):
             self.omit(path, "sqlite")
             return
@@ -115,12 +189,56 @@ class Evidence:
                 data = (json.dumps(projected, separators=(",", ":")) + "\n").encode()
             elif isinstance(parsed.get("status"), str):
                 self.status = parsed["status"][:100]
-        if len(data) > limit:
-            self.omit(path, "size_limit")
+        self.record(path, data)
+
+    def runtime_failure(self, root, path):
+        captured = self.read(root, (*path, "process.json"), 4096)
+        if captured is None:
             return
-        self.save(path, data)
-        self.bytes += len(data)
-        self.files.append({"path": "/".join(path), "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+        process = json_object(captured[0])
+        code = process.get("ExitCode")
+        if type(code) is not int or code == 0 or not -1 <= code <= 255:
+            return
+        classification = process.get("Classification")
+        report = {
+            "exit_code": code,
+            "classification": classification if isinstance(classification, str) and classification in PROCESS_FAILURES else "unknown",
+        }
+        reason_identified = False
+        for stream, name in (("stderr", "stderr.log"), ("stdout", "stdout.jsonl")):
+            captured = self.read(root, (*path, name), DIAGNOSTIC_TAIL_BYTES, tail=True)
+            if captured is None:
+                report[stream] = {"capture": "unavailable"}
+                continue
+            data, size = captured
+            details = {"bytes": size}
+            if size > len(data):
+                details["truncated"] = True
+            if stream == "stderr":
+                lowered = data.lower()
+                signals = [signal for marker, signal in STDERR_SIGNALS.items() if marker in lowered]
+                if signals:
+                    details["signals"] = signals
+                    reason_identified = True
+            else:
+                if "truncated" in details:
+                    _, _, data = data.partition(b"\n")
+                error = last_opencode_error(data)
+                if error is not None:
+                    details["last_error"] = error
+                    if error["type"] != "unknown" or "reason" in error or "http_status" in error:
+                        reason_identified = True
+            report[stream] = details
+        if not reason_identified:
+            report["reason"] = "unknown"
+        captured = self.read(root, (*path, "response-raw.txt"), 1024, tail=True)
+        if captured is not None:
+            outcome = captured[0].strip().rpartition(b"\n")[2].strip().lower()
+            for value in ("fixed", "needs-human", "blocked"):
+                if outcome == f"outcome: {value}".encode():
+                    report["author_reported_outcome"] = value
+                    break
+        self.record((*path, "runtime-failure.json"), (json.dumps(report, indent=2) + "\n").encode())
 
     @contextmanager
     def source_dir(self, root, path):
@@ -177,6 +295,7 @@ class Evidence:
                         path = ("result", entry.name)
                         with self.source_dir(result, path) as step:
                             if step is not None:
+                                self.runtime_failure(step, path)
                                 for name in STAGE:
                                     self.file(step, (*path, name))
             with self.source_dir(result, ("result", "evidence")) as evidence:
