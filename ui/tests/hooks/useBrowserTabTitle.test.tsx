@@ -47,6 +47,21 @@ describe("useBrowserTabTitle", () => {
   });
 
   it.each([
+    ["/doc", "Help"],
+    ["/doc/", "Help"],
+    ["/doc/00__Overview/overview", "Help"],
+    ["/documentary", "CIP"],
+  ])("sets the browser tab title for %s", async (pathname, title) => {
+    mockPathname = pathname;
+
+    renderHook(() => useBrowserTabTitle());
+
+    await waitFor(() => {
+      expect(document.title).toBe(title);
+    });
+  });
+
+  it.each([
     [
       "context",
       "/services/context/ctx-1/parameters",

@@ -14,9 +14,17 @@ describe("browserTabTitle", () => {
     it("maps main and module list routes", () => {
       expect(getStaticBrowserTabTitle("/", "")).toBe("Chains");
       expect(getStaticBrowserTabTitle("/chains", "")).toBe("Chains");
-      expect(getStaticBrowserTabTitle("/doc/overview", "")).toBe("Helper");
       expect(getStaticBrowserTabTitle("/admintools", "")).toBe("Admin Tools");
       expect(getStaticBrowserTabTitle("/devtools", "")).toBe("Dev Tools");
+    });
+
+    it.each([
+      ["/doc", "Help"],
+      ["/doc/", "Help"],
+      ["/doc/overview", "Help"],
+      ["/documentary", null],
+    ])("should use the documentation title only for %s", (pathname, title) => {
+      expect(getStaticBrowserTabTitle(pathname, "")).toBe(title);
     });
 
     it("maps services list tabs from hash", () => {
