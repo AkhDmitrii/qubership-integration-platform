@@ -41,6 +41,8 @@ The draft PR draws its verification steps and observed results from the sealed a
 
 Submit a **Request changes** review on the current engineering PR head to ask the fixer to address it. The coordinator reads the submitted review and its inline comments from GitHub. It checks the reviewer's current write access and the live `AGENT_ALLOWED_ACTORS` list. Ordinary review comments remain available for discussion.
 
+For automatic revisions, the receipt stores the accepted review IDs and CI failure keys. The worker reads the feedback from GitHub and checks it against the digest recorded at admission. This lets one revision carry reviews whose combined text exceeds the size of a GitHub comment. The worker includes up to 4,096 bytes from each review message and marks truncated excerpts.
+
 To select individual comments yourself, leave a new top-level comment on the published engineering PR. Copy a link to each review comment, submitted review, or PR conversation comment that the author should address. For example:
 
 ```text
@@ -56,11 +58,19 @@ The receipt identifies the run and the PR head that the author will work from. C
 
 ## Read CI and the final outcome
 
-**QIP agent CI observation** updates one comment on the open engineering PR. It reads GitHub check runs and commit statuses for the current head and, when available, the test merge. Check the SHA in the report when a new commit arrives. You can set `AGENT_CI_REQUIRED_CHECKS` to a list of expected job or status names, one per line, to supplement the branch rules available to Actions. The observer runs on PR changes and CI completions. A daily scan and manual dispatch can refresh the report if an event was missed. Reading checks uses no model calls.
+**QIP agent CI observation** updates one comment on the open engineering PR. It reads GitHub check runs and commit statuses for the current head and, when available, the test merge. Check the SHA in the report when a new commit arrives. You can set `AGENT_CI_REQUIRED_CHECKS` to a list of expected job or status names, one per line, to supplement the branch rules available to Actions. If a branch rule requires an entire workflow, list its required job names in this variable.
+
+The observer runs on PR changes and CI completions. A daily scan and manual dispatch can refresh the report if an event was missed. Reading checks uses no model calls.
 
 With `AGENT_ENABLED=true` and `AGENT_MODE=pilot`, automatic follow-up applies to eligible open engineering PRs, including drafts already in the daily scan. To inspect the decision locally, run `go run ./cmd/agent-follow --preview` from `tools/autonomous-fixer` with the same repository, default ref, tokens, and `INPUT_PULL_REQUEST` as the follow job.
 
-The coordinator waits for the required checks and includes optional failures that have already completed. When GitHub reports no required checks, it waits for the checks reported for that commit. It sends identifiable test, build, and lint failures to the engineering author with the job link and diagnostic evidence. If review feedback and CI failures are available together, the author handles them in the same PR revision. When a check has already failed and another required check is running, the coordinator defers a fresh review to collect both results. On its next wake after the review is ten minutes old, it can process the review alone. A review left on an older head during another revision gets a request for confirmation if it still needs attention. A confirmed transient Actions failure can trigger one rerun of the failed jobs without calling a model. If a failure needs manual diagnosis or recurs after automatic repair, read the coordinator's note on the PR. The maintainer resolves review threads, marks the draft ready, and decides when to merge.
+The coordinator waits for the required checks and includes failures from optional checks that have finished. If the branch has no required checks, it waits for all reported checks. When the same check runs on both the PR head and the test merge, the coordinator uses its test merge result. Checks that run only on the head still count.
+
+The engineering author receives the job link and diagnostic evidence for each identifiable test, build, or lint failure. When review feedback and CI failures arrive together, the author handles both in one revision. If a check has failed while another required check is running, the coordinator defers a new review. Once the review is ten minutes old, the next workflow event, manual run, or daily scan can send it to the author while CI finishes.
+
+A confirmed runner or service failure can trigger one retry of the failed jobs without calling a model. The coordinator leaves a note on the PR when a failure needs manual diagnosis or the same diagnostic returns after an automatic repair. If another test starts failing in that job, the author can address the new test in the same pass. For source errors, the comparison uses the reported file and location. Moving the error to a different line can trigger a new repair.
+
+If the head changes during a revision, the coordinator asks the reviewer to confirm any outstanding feedback on the old head. The maintainer resolves review threads, marks the draft ready, and decides when to merge.
 
 **QIP agent PR outcome** records both merged and closed-unmerged PRs. Its comment and Actions artifact identify the published candidate, the last PR head, and the merge commit when applicable. The report timestamps the CI observation because checks can finish or rerun after closure. The comparison uses each version's patch against its own base. Missing historical evidence produces an unknown result. A changed patch can include work by the author, a maintainer, or both. Use the commit and discussion history when attributing a change.
 

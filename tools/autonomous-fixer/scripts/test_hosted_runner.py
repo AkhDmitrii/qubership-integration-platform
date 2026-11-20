@@ -139,16 +139,37 @@ class HostedIssueTest(unittest.TestCase):
             self.assertIn(b"differs from the admitted revision", tampered.stderr)
             self.assertFalse(command[-1].exists())
 
-    def test_renders_automatic_ci_evidence_as_quoted_feedback(self):
+    def test_renders_large_automatic_review_and_ci_evidence(self):
         checkpoint, issue = admitted_issue()
+        pull = f"https://github.com/{REPO}/pull/900"
         job_url = f"https://github.com/{REPO}/actions/runs/84/job/21"
+        feedback = []
+        for i in range(13):
+            body = f"Preserve behavior {i + 1}. ".ljust(4000, "x")
+            feedback.append({"url": f"{pull}#discussion_r{i + 1}", "path": "ui/view.ts", "line": 42 + i, "body": body})
+        feedback.append({"kind": "ci", "url": job_url, "body": "Compile UI.\nTypeScript reported TS1234 at ui/view.ts:42:8."})
         revision = {
             "automatic": True, "head": checkpoint["contract"]["baseSha"], "issue": issue["number"],
             "commentId": 12, "pullNumber": 900, "originRun": {"runId": 52, "runAttempt": 1},
-            "feedback": [{"kind": "ci", "url": job_url, "body": "Compile UI.\nTypeScript reported TS1234 at ui/view.ts:42:8."}],
+            "feedback": feedback,
         }
-        task = hosted_issue.render_revision(revision, checkpoint, REPO)
-        self.assertIn(f"[Automatic request](https://github.com/{REPO}/pull/900#issuecomment-12)", task)
+        revision_data = json.dumps(revision).encode()
+        checkpoint["revisionSha256"] = hashlib.sha256(revision_data).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkpoint_path = root / "checkpoint.json"
+            issue_path = root / "issue.json"
+            revision_path = root / "revision.json"
+            assignment = root / "assignment"
+            checkpoint_path.write_text(json.dumps(checkpoint))
+            issue_path.write_text(json.dumps(issue))
+            revision_path.write_bytes(revision_data + b"\n")
+            subprocess.run([sys.executable, SCRIPTS / "hosted_issue.py", checkpoint_path, issue_path, assignment,
+                            "--revision", revision_path], env={**os.environ, "GITHUB_REPOSITORY": REPO}, check=True)
+            task = (assignment / "task.md").read_text()
+        self.assertIn(f"[Automatic request]({pull}#issuecomment-12)", task)
+        for item in feedback[:-1]:
+            self.assertIn(f"[Discussion]({item['url']}) (`ui/view.ts:{item['line']}`)\n\n> {item['body']}\n", task)
         self.assertIn(f"[CI check]({job_url})", task)
         self.assertIn("> Compile UI.\n> TypeScript reported TS1234 at ui/view.ts:42:8.", task)
 

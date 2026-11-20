@@ -45,25 +45,27 @@ func TestRepairWaitsForRequiredChecksAndIncludesCompletedOptionalFailures(t *tes
 	if failure.Excerpt != "TypeScript reported TS2322 at ui/src/App.tsx:32:4." || failure.URL != "https://github.com/org/repo/actions/runs/43/job/42" {
 		t.Fatalf("failure evidence: %+v", failure)
 	}
-	if key := failureKey(failedAction(testMerge, 52, 53, 44, 2), "TypeScript reported TS2322 at ui/src/App.tsx:35:7."); key != failure.Key {
-		t.Error("a new commit, run, and line changed the failure key")
+	if key := failureKey(failureJob(failedAction(testMerge, 52, 53, 44, 2)), failure.Excerpt); key != failure.Key {
+		t.Error("a new commit and run changed the failure key")
 	}
-	if key := failureKey(failedAction(testMerge, 52, 53, 45, 2), failure.Excerpt); key == failure.Key {
+	if key := failureKey(failureJob(failedAction(testMerge, 52, 53, 45, 2)), failure.Excerpt); key == failure.Key {
 		t.Error("different workflows share a failure key")
 	}
-	if key := failureKey(failedAction(testMerge, 52, 53, 44, 2), "TypeScript reported TS2323 at ui/src/App.tsx:32:4."); key == failure.Key {
+	if key := failureKey(failureJob(failedAction(testMerge, 52, 53, 44, 2)), "TypeScript reported TS2323 at ui/src/App.tsx:32:4."); key == failure.Key {
 		t.Error("different errors in the same workflow share a failure key")
 	}
 }
 
-func TestRepairUsesEffectiveCommitAndWaitsForObservedChecksWithoutRequirements(t *testing.T) {
+func TestRepairWaitsForSelectedChecksWithoutRequirements(t *testing.T) {
 	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected request %s", r.URL)
 		http.NotFound(w, r)
 	})
+	mergeBuild := failedAction(testMerge, 52, 53, 44, 1)
+	mergeBuild.Status, mergeBuild.Conclusion = "passed", "success"
 	snapshot := Snapshot{HeadSHA: testHead, TestMergeSHA: testMerge, Checks: []Check{
-		failedAction(testHead, 42, 43, 44, 1), {SHA: testMerge, Name: "Build", Status: "passed"},
-		{SHA: testMerge, Name: "Tests", Status: "pending"},
+		failedAction(testHead, 42, 43, 44, 1), mergeBuild,
+		{SHA: testHead, Name: "Tests", Status: "pending"},
 	}}
 	plan, err := PlanRepair(t.Context(), client, snapshot)
 	if err != nil || plan.Ready {
@@ -78,6 +80,34 @@ func TestRepairUsesEffectiveCommitAndWaitsForObservedChecksWithoutRequirements(t
 	plan, err = PlanRepair(t.Context(), client, snapshot)
 	if err != nil || plan.Ready {
 		t.Fatalf("plan without a confirmed inventory: %+v, %v", plan, err)
+	}
+}
+
+func TestRepairIncludesHeadFailuresAlongsideMergeChecks(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/jobs/42":
+			fixture(w, workflowJob{ID: 42, RunID: 43, SHA: testHead, Status: "completed", Conclusion: "failure"})
+		case "/repos/org/repo/check-runs/42/annotations":
+			fixture(w, []annotation{{Level: "failure", Message: "ui/src/App.tsx(32,4): error TS2322: incompatible type"}})
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+			http.NotFound(w, r)
+		}
+	})
+	snapshot := Snapshot{HeadSHA: testHead, TestMergeSHA: testMerge, Checks: []Check{
+		failedAction(testHead, 42, 43, 44, 1),
+		{Name: "Tests", SHA: testMerge, Required: true, Status: "passed"},
+		{Name: "Deploy", SHA: testHead, Required: true, Status: "pending"},
+	}}
+	plan, err := PlanRepair(t.Context(), client, snapshot)
+	if err != nil || plan.Ready {
+		t.Fatalf("plan while a required check runs: %+v, %v", plan, err)
+	}
+	snapshot.Checks[2].Status = "skipped"
+	plan, err = PlanRepair(t.Context(), client, snapshot)
+	if err != nil || !plan.Ready || len(plan.Failures) != 1 || len(plan.Human)+len(plan.RetryRuns) != 0 {
+		t.Fatalf("plan after both commits settled: %+v, %v", plan, err)
 	}
 }
 
@@ -137,12 +167,13 @@ func TestRepairExtractsBoundedDiagnosticSummaries(t *testing.T) {
 		"2026-11-20T11:02:03.4Z \x1b[31mFAIL path/Button.test.tsx\x1b[0m (12.43s)",
 		"[ERROR] foo/Foo.java:[22,9] unexpected token private log message",
 		"[ERROR] foo/Foo.java:[22,9] duplicate line",
-		"42:6  error  private log message @typescript-eslint/no-unused-vars",
+		"/home/runner/work/repo/repo/ui/src/Report.ts",
+		"42:6  error  private log message  @typescript-eslint/no-unused-vars",
 		"--- FAIL: TestReport (0s)",
 	}
-	got := readDiagnostics(nil, &dependency, strings.Join(lines, "\n"))
+	got := readDiagnostics(nil, &dependency, strings.Join(lines, "\n"), "")
 	want := []string{"Jest reported a failure in path/Button.test.tsx.", "The Java compiler reported a source error at foo/Foo.java:22:9.",
-		"ESLint reported @typescript-eslint/no-unused-vars at line 42, column 6."}
+		"ESLint reported @typescript-eslint/no-unused-vars at ui/src/Report.ts:42:6."}
 	if !slices.Equal(got, want) {
 		t.Fatalf("diagnostics: %q, want %q", got, want)
 	}
@@ -155,7 +186,7 @@ func TestRerunFailedJobsUsesTheRepositoryRunAndAcceptsCreatedWithoutBody(t *test
 		}
 		w.WriteHeader(http.StatusCreated)
 	})
-	if err := RerunFailedJobs(t.Context(), client, 43); err != nil {
+	if err := client.RerunFailedActionsJobs(t.Context(), 43); err != nil {
 		t.Fatal(err)
 	}
 }

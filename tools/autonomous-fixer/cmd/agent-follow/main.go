@@ -28,7 +28,7 @@ func run(ctx context.Context, args []string) error {
 	}
 	pull, err := fixer.PositiveID(os.Getenv("INPUT_PULL_REQUEST"))
 	if err != nil {
-		return fmt.Errorf("invalid pull request number")
+		return fmt.Errorf("INPUT_PULL_REQUEST must be a positive pull request number")
 	}
 	token, reader := os.Getenv("GITHUB_TOKEN"), os.Getenv("AGENT_VARIABLES_READ_TOKEN")
 	if token == "" || reader == "" {

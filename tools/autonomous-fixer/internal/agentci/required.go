@@ -19,6 +19,7 @@ type Requirement struct {
 func Required(ctx context.Context, client *fixer.GitHubClient, baseRef, configuredNames string) ([]Requirement, []string) {
 	var requirements []Requirement
 	var diagnostics []string
+	hasConfiguredChecks := strings.TrimSpace(configuredNames) != ""
 	var rules []struct {
 		Type       string `json:"type"`
 		Parameters struct {
@@ -39,7 +40,9 @@ func Required(ctx context.Context, client *fixer.GitHubClient, baseRef, configur
 				requirements = append(requirements, Requirement{Name: check.Context, AppID: max(0, check.AppID)})
 			}
 		case "workflows":
-			diagnostics = append(diagnostics, "The branch rules require workflows. Set AGENT_CI_REQUIRED_CHECKS to track their expected job names.")
+			if !hasConfiguredChecks {
+				diagnostics = append(diagnostics, "The branch rules require workflows. Set AGENT_CI_REQUIRED_CHECKS to track their expected job names.")
+			}
 		}
 	}
 	var protection struct {
@@ -67,7 +70,7 @@ func Required(ctx context.Context, client *fixer.GitHubClient, baseRef, configur
 			requirements = append(requirements, Requirement{Name: name})
 		}
 	}
-	if protection.Protected && !protection.Protection.Enabled && len(rules) == 0 && strings.TrimSpace(configuredNames) == "" {
+	if protection.Protected && !protection.Protection.Enabled && len(rules) == 0 && !hasConfiguredChecks {
 		diagnostics = append(diagnostics, "GitHub reports branch protection without check details. Set AGENT_CI_REQUIRED_CHECKS to track their expected job names.")
 	}
 	return uniqueRequirements(requirements), diagnostics

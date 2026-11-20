@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentci"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentpr"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/autorequest"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
@@ -298,7 +299,7 @@ func (c *controller) reconcile(ctx context.Context, report *Report, allowed stri
 		}
 	}
 	for _, item := range pending {
-		if !canDeliver(item.request, report) {
+		if !canDeliver(item.request, report.Reviews, plan) {
 			continue
 		}
 		report.RequestID = item.id
@@ -359,14 +360,14 @@ func requestReviewsCurrent(selected []autorequest.Review, head string, current [
 	return true
 }
 
-func canDeliver(request autorequest.Request, report *Report) bool {
+func canDeliver(request autorequest.Request, reviews []autorequest.Review, plan agentci.RepairPlan) bool {
 	for _, review := range request.Reviews {
-		if !slices.Contains(report.Reviews, review) {
+		if !slices.Contains(reviews, review) {
 			return false
 		}
 	}
 	for _, failure := range request.Failures {
-		if !slices.ContainsFunc(report.Failures, func(current autorequest.Failure) bool { return failure.Key == current.Key }) {
+		if _, found := plan.ResolveFailure(failure); !found {
 			return false
 		}
 	}
@@ -384,7 +385,7 @@ func requestBody(request autorequest.Request) (string, error) {
 		fmt.Fprintf(&body, "\n- [Changes requested by %s](#pullrequestreview-%d)", markdownText(review.Actor.Login), review.ID)
 	}
 	for _, failure := range request.Failures {
-		fmt.Fprintf(&body, "\n- CI failure in %s", markdownText(failure.Name))
+		fmt.Fprintf(&body, "\n- CI failure in %s. %s", markdownText(failure.Name), markdownText(failure.Excerpt))
 	}
 	fmt.Fprint(&body, "\n\n", botFooter)
 	return body.String(), nil

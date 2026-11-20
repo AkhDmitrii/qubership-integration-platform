@@ -108,7 +108,7 @@ func run(ctx context.Context, args []string) error {
 	if args[0] == "publish" {
 		return publish(ctx, c, a)
 	}
-	checkpoint, err := c.Verify(ctx, a)
+	a, checkpoint, err := c.VerifyWork(ctx, a)
 	if err != nil {
 		return err
 	}

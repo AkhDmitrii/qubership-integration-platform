@@ -31,6 +31,7 @@ type fixture struct {
 	status         string
 	feedbackPull   int64
 	reviewSize     int
+	reviewBodySize int
 	feedbackBody   string
 	commands       map[int64]fixer.Comment
 	comments       []fixer.Comment
@@ -121,6 +122,10 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 	case p == "/issues/4/comments" && r.Method == "POST":
 		var input struct{ Body string }
 		_ = json.NewDecoder(r.Body).Decode(&input)
+		if len(input.Body) > 65536 {
+			http.Error(w, "comment body is too long", http.StatusUnprocessableEntity)
+			return
+		}
 		reply := fixer.Comment{ID: int64(200 + f.writes), User: f.bot, Body: input.Body}
 		f.writes++
 		f.comments = append(f.comments, reply)
@@ -171,7 +176,7 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 		comments := make([]discussion, f.reviewSize)
 		for i := range comments {
 			comments[i] = discussion{ID: id*10 + int64(i), PullAPIURL: fmt.Sprintf("https://api.github.com/repos/org/repo/pulls/%d", f.feedbackPull),
-				Body: fmt.Sprintf("Review comment %d", i+1), User: f.reviewer, ReviewID: id, Path: "ui/a.ts", Line: 22}
+				Body: reviewCommentBody(i, f.reviewBodySize), User: f.reviewer, ReviewID: id, Path: "ui/a.ts", Line: 22}
 		}
 		send(comments)
 	case p == "/compare/"+f.origin+"..."+f.pr.Head.SHA || (f.publishedTip != "" && p == "/compare/"+f.publishedTip+"..."+f.pr.Head.SHA):
@@ -213,6 +218,11 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func reviewCommentBody(index, size int) string {
+	label := fmt.Sprintf("Review comment %d", index+1)
+	return label + strings.Repeat("x", max(0, size-len(label)))
 }
 
 func (f *fixture) change(change func()) {

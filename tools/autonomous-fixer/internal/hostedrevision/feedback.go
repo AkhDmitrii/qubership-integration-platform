@@ -1,10 +1,12 @@
 package hostedrevision
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -104,11 +106,14 @@ func loadFeedback(ctx context.Context, client *fixer.GitHubClient, repository st
 	for _, s := range selections {
 		if s.kind == "pullrequestreview-" {
 			review := fmt.Sprintf("/pulls/%d/reviews/%d", pull, s.id)
+			automatic := s.actor.ID > 0
 			var summary discussion
 			if err := client.Request(ctx, "GET", review, nil, &summary); err != nil {
+				if automatic && notFound(err) {
+					return nil, ErrUnauthorized
+				}
 				return nil, err
 			}
-			automatic := s.actor.ID > 0
 			if automatic && (summary.User != s.actor || summary.CommitID != s.head || summary.State != "CHANGES_REQUESTED") {
 				return nil, ErrUnauthorized
 			}
@@ -131,11 +136,15 @@ func loadFeedback(ctx context.Context, client *fixer.GitHubClient, repository st
 					}
 					comments = append(comments, comment)
 				}
+				slices.SortFunc(comments, func(a, b discussion) int { return cmp.Compare(a.ID, b.ID) })
 			} else if err := client.Request(ctx, "GET", fmt.Sprintf("%s/comments?per_page=%d", review, maxFeedback+1), nil, &comments); err != nil {
 				return nil, err
 			}
 			hasSummary := strings.TrimSpace(summary.Body) != ""
 			if !hasSummary && len(comments) == 0 {
+				if automatic {
+					return nil, ErrUnauthorized
+				}
 				return nil, fmt.Errorf("the selected review has no feedback")
 			}
 			if hasSummary {

@@ -119,7 +119,7 @@ func (c *Controller) currentReviews(ctx context.Context, actors string, pr agent
 	return reviews, nil
 }
 
-func (c *Controller) currentFailures(ctx context.Context, pr agentpr.PullRequest, requested []autorequest.Failure) ([]autorequest.Failure, error) {
+func (c *Controller) currentFailures(ctx context.Context, pr agentpr.PullRequest, requested []autorequest.Failure, consumed ...autorequest.Failure) ([]autorequest.Failure, error) {
 	if len(requested) == 0 {
 		return nil, nil
 	}
@@ -137,20 +137,26 @@ func (c *Controller) currentFailures(ctx context.Context, pr agentpr.PullRequest
 	if err != nil || !plan.Ready {
 		return nil, err
 	}
+	plan.Failures = slices.DeleteFunc(plan.Failures, func(current autorequest.Failure) bool {
+		return slices.ContainsFunc(consumed, func(prior autorequest.Failure) bool {
+			return plan.MatchesFailure(current, prior)
+		})
+	})
 	var failures []autorequest.Failure
-	for _, failure := range plan.Failures {
-		if slices.ContainsFunc(requested, func(want autorequest.Failure) bool { return want.Key == failure.Key }) {
+	for _, want := range requested {
+		if failure, found := plan.ResolveFailure(want); found {
 			failures = append(failures, failure)
 		}
 	}
 	return failures, nil
 }
 
-func (c *Controller) prepareAutomatic(ctx context.Context, actors string, pr agentpr.PullRequest, command fixer.Comment, seen map[int64]Assignment, a *Assignment) error {
+func (c *Controller) prepareAutomatic(ctx context.Context, actors string, pr agentpr.PullRequest, command fixer.Comment, seen map[int64]Assignment, comments []fixer.Comment, a *Assignment) error {
 	r, err := c.request(pr, command)
 	if err != nil {
 		return err
 	}
+	var consumedFailures []autorequest.Failure
 	for _, existing := range seen {
 		if existing.Head != r.Head {
 			continue
@@ -162,42 +168,70 @@ func (c *Controller) prepareAutomatic(ctx context.Context, actors string, pr age
 		r.Failures = slices.DeleteFunc(r.Failures, func(failure autorequest.Failure) bool {
 			return slices.Contains(existing.FailureKeys, failure.Key)
 		})
+		if !existing.Automatic || len(r.Failures) == 0 || len(existing.FailureKeys) == 0 {
+			continue
+		}
+		for _, key := range existing.FailureKeys {
+			consumedFailures = append(consumedFailures, autorequest.Failure{Key: key})
+		}
+		i := slices.IndexFunc(comments, func(comment fixer.Comment) bool {
+			return comment.ID == existing.CommentID && comment.UpdatedAt == comment.CreatedAt && existing.matchesCommand(comment)
+		})
+		if i < 0 {
+			continue
+		}
+		prior, err := c.request(pr, comments[i])
+		if err != nil {
+			return err
+		}
+		for _, failure := range prior.Failures {
+			if slices.Contains(existing.FailureKeys, failure.Key) {
+				consumedFailures = append(consumedFailures, failure)
+			}
+		}
 	}
 	reviews, err := c.currentReviews(ctx, actors, pr, r.Reviews)
 	if err != nil {
 		return err
 	}
-	failures, err := c.currentFailures(ctx, pr, r.Failures)
+	failures, err := c.currentFailures(ctx, pr, r.Failures, consumedFailures...)
 	if err != nil {
 		return err
 	}
-	selected := make([]selection, 0, len(reviews))
 	for _, review := range reviews {
 		a.ReviewIDs = append(a.ReviewIDs, review.ID)
-		selected = append(selected, selection{
-			anchor: fmt.Sprintf("#pullrequestreview-%d", review.ID), kind: "pullrequestreview-", id: review.ID,
-			actor: review.Actor, head: r.Head,
-		})
-	}
-	if len(selected) > 0 {
-		a.Feedback, err = loadFeedback(ctx, c.cfg.Client, c.repo.FullName, pr.Number, selected)
-		if err != nil {
-			return err
-		}
 	}
 	for _, failure := range failures {
 		a.FailureKeys = append(a.FailureKeys, failure.Key)
-		a.Feedback = append(a.Feedback, Feedback{
+	}
+	if len(reviews)+len(failures) == 0 {
+		return ErrUnauthorized
+	}
+	a.Feedback, err = c.automaticFeedback(ctx, pr, reviews, failures)
+	return err
+}
+
+func (c *Controller) automaticFeedback(ctx context.Context, pr agentpr.PullRequest, reviews []autorequest.Review, failures []autorequest.Failure) ([]Feedback, error) {
+	selected := make([]selection, 0, len(reviews))
+	for _, review := range reviews {
+		selected = append(selected, selection{
+			anchor: fmt.Sprintf("#pullrequestreview-%d", review.ID), kind: "pullrequestreview-", id: review.ID,
+			actor: review.Actor, head: pr.Head.SHA,
+		})
+	}
+	feedback, err := loadFeedback(ctx, c.cfg.Client, c.repo.FullName, pr.Number, selected)
+	if err != nil {
+		return nil, err
+	}
+	for _, failure := range failures {
+		feedback = append(feedback, Feedback{
 			Kind: "ci", URL: failure.URL, Body: strings.TrimSpace(failure.Name + "\n\n" + failure.Excerpt),
 		})
 	}
-	if len(a.Feedback) == 0 {
-		return ErrUnauthorized
-	}
-	return nil
+	return feedback, nil
 }
 
-func (c *Controller) verifyAutomatic(ctx context.Context, actors string, pr agentpr.PullRequest, command fixer.Comment, a Assignment) error {
+func (c *Controller) verifyAutomatic(ctx context.Context, actors string, pr agentpr.PullRequest, command fixer.Comment, a *Assignment) error {
 	r, err := c.request(pr, command)
 	if err != nil {
 		return err
@@ -216,6 +250,10 @@ func (c *Controller) verifyAutomatic(ctx context.Context, actors string, pr agen
 	}
 	if len(reviews) != len(a.ReviewIDs) || len(failures) != len(a.FailureKeys) {
 		return ErrUnauthorized
+	}
+	if a.Feedback == nil {
+		a.Feedback, err = c.automaticFeedback(ctx, pr, reviews, failures)
+		return err
 	}
 	return nil
 }

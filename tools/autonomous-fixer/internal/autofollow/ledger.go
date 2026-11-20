@@ -161,10 +161,6 @@ type runRecord struct {
 	Actor fixer.GitHubUser `json:"actor"`
 }
 
-func dispatchTitle(pr, request int64) string {
-	return fmt.Sprintf("qip-agent-auto-revise|%d|%d", pr, request)
-}
-
 func redeliveryKey(id int64) string {
 	return fmt.Sprintf("redelivery:%d", id)
 }
@@ -190,13 +186,9 @@ func (c *controller) active(ctx context.Context, book ledger) (bool, error) {
 		if err := c.client.Request(ctx, "GET", path, nil, &run); err != nil {
 			return false, err
 		}
-		title := fmt.Sprintf("qip-agent-revise|%d|%d", c.pr.Number, id)
-		event := "issue_comment"
-		if assignment.Automatic {
-			title, event = dispatchTitle(c.pr.Number, id), "workflow_dispatch"
-		}
-		if run.ID != assignment.Run.RunID || !c.workflowRun(run) || run.HeadSHA != assignment.WorkflowSHA ||
-			run.DisplayTitle != title || run.Event != event || run.Status == "" {
+		identity, err := run.RevisionIdentity()
+		if err != nil || run.ID != assignment.Run.RunID || !c.workflowRun(run) || run.HeadSHA != assignment.WorkflowSHA ||
+			identity != (fixer.RevisionRunIdentity{PullNumber: c.pr.Number, RequestID: id, Automatic: assignment.Automatic}) || run.Status == "" {
 			return false, fmt.Errorf("revision workflow differs from its receipt")
 		}
 		if run.Status != "completed" {
@@ -217,16 +209,16 @@ func (c *controller) findDispatches(ctx context.Context, earliest time.Time) (ma
 		return nil, err
 	}
 	runs := map[int64]runRecord{}
-	prefix := fmt.Sprintf("qip-agent-auto-revise|%d|", c.pr.Number)
 	for _, item := range items {
 		var run runRecord
 		if err := json.Unmarshal(item, &run); err != nil {
 			return nil, fmt.Errorf("invalid revision workflow run: %w", err)
 		}
-		if !strings.HasPrefix(run.DisplayTitle, prefix) || run.Actor != c.bot || run.Event != "workflow_dispatch" {
+		identity, err := run.RevisionIdentity()
+		if !identity.Automatic || identity.PullNumber != c.pr.Number || run.Actor != c.bot {
 			continue
 		}
-		id, err := fixer.PositiveID(strings.TrimPrefix(run.DisplayTitle, prefix))
+		id := identity.RequestID
 		if err != nil || !c.workflowRun(run.WorkflowRun) || run.Status == "" {
 			return nil, fmt.Errorf("invalid automatic revision workflow identity")
 		}

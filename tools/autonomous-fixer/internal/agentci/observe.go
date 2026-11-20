@@ -88,17 +88,11 @@ func completedRevision(repo fixer.Repository, event Event) int64 {
 		run.Path != ".github/workflows/agent-work.yaml" {
 		return 0
 	}
-	kind, rest, _ := strings.Cut(run.DisplayTitle, "|")
-	number, receipt, _ := strings.Cut(rest, "|")
-	if (kind != "qip-agent-revise" || run.Event != "issue_comment") &&
-		(kind != "qip-agent-auto-revise" || run.Event != "workflow_dispatch") {
+	identity, err := run.RevisionIdentity()
+	if err != nil {
 		return 0
 	}
-	pr, err := fixer.PositiveID(number)
-	if _, receiptErr := fixer.PositiveID(receipt); err != nil || receiptErr != nil {
-		return 0
-	}
-	return pr
+	return identity.PullNumber
 }
 
 func targets(ctx context.Context, client *fixer.GitHubClient, repo fixer.Repository, options Options) ([]int64, error) {
@@ -218,7 +212,7 @@ func observePullRequest(ctx context.Context, client *fixer.GitHubClient, repo fi
 		return nil, nil
 	}
 	snapshot.Diagnostics = append(snapshot.Diagnostics, diagnostics...)
-	snapshot.Status = summarize(snapshot.Checks, len(snapshot.Diagnostics) > 0)
+	snapshot.Status = summarize(snapshot)
 	report := &Report{ObservedAt: time.Now().UTC(), Repository: repo.FullName, PullRequest: number, Issue: state.IssueNumber,
 		PublicationSHA: state.PilotPublication.SHA, WorkerRun: *execution.Run, Disposition: "observed", CI: snapshot}
 	if options.Apply {

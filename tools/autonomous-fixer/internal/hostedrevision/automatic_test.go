@@ -2,6 +2,9 @@ package hostedrevision
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -75,15 +78,15 @@ func TestAutomaticRevisionUsesCurrentReviewAndInlineFeedback(t *testing.T) {
 	f, r := automaticFixture(t)
 	c := openFixture(t, f.cfg)
 	a := accepted(t, c)
+	ctx := t.Context()
+	a, checkpoint, err := c.VerifyWork(ctx, a)
+	if err != nil || !a.MatchesCheckpoint(checkpoint) {
+		t.Fatalf("verification = %#v, %v", checkpoint, err)
+	}
 	if !a.Automatic || a.Actor != f.bot || a.Head != r.Head || !slices.Equal(a.ConsumedReviews(), []int64{11}) ||
 		len(a.Feedback) != 3 || a.Feedback[0].Body != f.reviews[0].Body ||
 		a.Feedback[2].URL != "https://github.com/org/repo/pull/4#discussion_r111" || a.Feedback[2].Line != 22 {
 		t.Fatalf("assignment = %#v", a)
-	}
-	ctx := context.Background()
-	checkpoint, err := c.Verify(ctx, a)
-	if err != nil || !a.MatchesCheckpoint(checkpoint) {
-		t.Fatalf("verification = %#v, %v", checkpoint, err)
 	}
 	f.change(func() { f.permission = "read" })
 	if _, err := c.Verify(ctx, a); !errors.Is(err, ErrUnauthorized) {
@@ -226,6 +229,10 @@ func TestAutomaticRevisionBatchesReviewsAndChecksCurrentCI(t *testing.T) {
 	r.Reviews = append(r.Reviews, autorequest.Review{ID: newReview.ID, Actor: newReview.User})
 	c := openFixture(t, f.dispatch(t, r, 123, 13))
 	a := accepted(t, c)
+	a, _, err = c.VerifyWork(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !slices.Equal(a.ReviewIDs, []int64{11, 12}) || len(a.FailureKeys) != 1 ||
 		len(a.Feedback) != 7 || a.Feedback[6].Kind != "ci" || !strings.Contains(a.Feedback[6].Body, "TypeScript reported TS1234 at ui/a.ts:20:30.") {
 		t.Fatalf("combined assignment = %#v", a)
@@ -263,8 +270,111 @@ func TestAutomaticCIWaitsForRequiredChecksAndSkipsGreenReruns(t *testing.T) {
 	}
 	f.change(func() { f.ciConclusion = "failure" })
 	a := accepted(t, c)
+	a, _, err = c.VerifyWork(ctx, a)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !slices.Equal(a.FailureKeys, []string{plan.Failures[0].Key}) || len(a.ReviewIDs) != 0 || len(a.Feedback) != 1 {
 		t.Fatalf("CI-only assignment = %#v", a)
+	}
+}
+
+func TestAutomaticRevisionRecoversLargeFeedbackForWorker(t *testing.T) {
+	f, request := automaticFixture(t)
+	f.change(func() {
+		f.reviewSize = 13
+		f.reviewBodySize = 4000
+		f.ciConclusion = "failure"
+	})
+	ctx := t.Context()
+	snapshot, err := agentci.Read(ctx, f.cfg.Client, request.Head, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := agentci.PlanRepair(ctx, f.cfg.Client, snapshot)
+	if err != nil || len(plan.Failures) != 1 {
+		t.Fatalf("repair plan = %#v, %v", plan, err)
+	}
+	request.Failures = plan.Failures
+	cfg := f.dispatch(t, request, 123, 13)
+	c := openFixture(t, cfg)
+	stored := accepted(t, c)
+	if len(stored.Feedback) != 0 || len(f.comments[0].Body) > 65536 || !slices.Equal(stored.ConsumedReviews(), []int64{11}) ||
+		!slices.Equal(stored.FailureKeys, []string{plan.Failures[0].Key}) {
+		t.Fatalf("receipt = %#v, comment size = %d", stored, len(f.comments[0].Body))
+	}
+	worker := openFixture(t, cfg)
+	stored, found, err := worker.Assignment(ctx)
+	if err != nil || !found {
+		t.Fatalf("recovered receipt = %#v, %t, %v", stored, found, err)
+	}
+	a, checkpoint, err := worker.VerifyWork(ctx, stored)
+	if err != nil || !stored.MatchesCheckpoint(checkpoint) || len(a.Feedback) != 15 {
+		t.Fatalf("worker verification = %v, feedback count = %d", err, len(a.Feedback))
+	}
+	if a.Feedback[0].Body != f.reviews[0].Body {
+		t.Fatal("the worker lost the review summary")
+	}
+	for i, feedback := range a.Feedback[1:14] {
+		if feedback.Body != reviewCommentBody(i, 4000) ||
+			feedback.URL != fmt.Sprintf("https://github.com/org/repo/pull/4#discussion_r%d", 110+i) ||
+			feedback.Path != "ui/a.ts" || feedback.Line != 22 {
+			t.Fatalf("worker changed inline feedback %d", i+1)
+		}
+	}
+	if ci := a.Feedback[14]; ci.Kind != "ci" || ci.URL != plan.Failures[0].URL || !strings.Contains(ci.Body, plan.Failures[0].Excerpt) {
+		t.Fatalf("worker CI feedback = %#v", ci)
+	}
+	input, err := json.Marshal(a)
+	if err != nil || fmt.Sprintf("%x", sha256.Sum256(input)) != checkpoint.RevisionSHA256 {
+		t.Fatalf("worker JSON differs from checkpoint: %v", err)
+	}
+	if len(base64.StdEncoding.EncodeToString(input)) <= 65536 {
+		t.Fatal("the full worker input fits in a GitHub comment")
+	}
+	cfg.Run.RunAttempt = 2
+	cfg.TriggerActor = f.reviewer.Login
+	publisher := openFixture(t, cfg)
+	stored, found, err = publisher.Assignment(ctx)
+	if err != nil || !found || !stored.MatchesCheckpoint(checkpoint) {
+		t.Fatalf("recovered publisher receipt = %#v, %t, %v", stored, found, err)
+	}
+	if _, err := publisher.Verify(ctx, stored); err != nil {
+		t.Fatalf("publisher verification = %v", err)
+	}
+	f.change(func() { f.reviews[0].Body = "Edited feedback on the same commit." })
+	if _, err := publisher.Verify(ctx, stored); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("changed feedback = %v", err)
+	}
+	f.change(func() { f.pr.Head.SHA = strings.Repeat("d", 40) })
+	if _, err := publisher.Verify(ctx, stored); !errors.Is(err, ErrStale) {
+		t.Fatalf("changed head = %v", err)
+	}
+}
+
+func TestAutomaticRevisionAcceptsExistingReceiptWithInlineFeedback(t *testing.T) {
+	f, _ := automaticFixture(t)
+	c := openFixture(t, f.cfg)
+	stored := accepted(t, c)
+	a, _, err := c.VerifyWork(t.Context(), stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := json.Marshal(receipt{Assignment: a, CheckpointSHA: a.checkpointSHA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.change(func() {
+		f.comments[0].Body = receiptMarker + base64.StdEncoding.EncodeToString(legacy) + " -->"
+		f.reviews[0].Body = "Edited feedback after admission."
+	})
+	stored, found, err := c.Assignment(t.Context())
+	if err != nil || !found {
+		t.Fatalf("legacy receipt = %#v, %t, %v", stored, found, err)
+	}
+	work, checkpoint, err := c.VerifyWork(t.Context(), stored)
+	if err != nil || !stored.MatchesCheckpoint(checkpoint) || !slices.Equal(work.Feedback, a.Feedback) {
+		t.Fatalf("legacy worker feedback = %#v, %v", work.Feedback, err)
 	}
 }
 

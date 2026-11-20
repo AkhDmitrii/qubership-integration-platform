@@ -26,21 +26,34 @@ func (c *controller) plan(ctx context.Context, book ledger, seen map[string]bool
 	}
 	var priorRequests []int64
 	if !plan.Ready {
-		waiting := slices.ContainsFunc(snapshot.Checks, func(check agentci.Check) bool {
+		checks := snapshot.SelectedChecks()
+		waiting := slices.ContainsFunc(checks, func(check agentci.Check) bool {
 			return check.Status == "pending" || check.Status == "missing"
 		})
-		if len(snapshot.Diagnostics) > 0 || slices.ContainsFunc(snapshot.Checks, func(check agentci.Check) bool {
+		if len(snapshot.Diagnostics) > 0 || slices.ContainsFunc(checks, func(check agentci.Check) bool {
 			return !waiting && (check.Status == "unknown" || check.Status == "cancelled")
 		}) {
 			plan.Human = append(plan.Human, "GitHub did not provide enough CI evidence for an automatic repair. Check the current CI observation if the failure persists.")
 		}
 	} else {
+		var seenInputs []autorequest.Failure
+		for _, item := range book.requests {
+			if item.request.Head == c.pr.Head.SHA {
+				for _, prior := range item.request.Failures {
+					if seen[prior.Key] {
+						seenInputs = append(seenInputs, prior)
+					}
+				}
+			}
+		}
 		filtered := plan.Failures[:0]
 		for _, failure := range plan.Failures {
-			if seen[failure.Key] {
+			if seen[failure.Key] || slices.ContainsFunc(seenInputs, func(prior autorequest.Failure) bool {
+				return plan.MatchesFailure(failure, prior)
+			}) {
 				continue
 			}
-			previous, err := c.previousRepair(ctx, book, failure)
+			previous, err := c.previousRepair(ctx, book, plan, failure)
 			if err != nil {
 				if ctx.Err() != nil {
 					return plan, false, ctx.Err()
@@ -49,7 +62,7 @@ func (c *controller) plan(ctx context.Context, book ledger, seen map[string]bool
 				continue
 			}
 			if previous > 0 {
-				plan.Human = append(plan.Human, fmt.Sprintf("%s failed again after an automatic repair. Review the previous revision before retrying.", failure.Name))
+				plan.Human = append(plan.Human, fmt.Sprintf("%s failed again after an automatic repair. %s Review the previous revision before retrying.", failure.Name, failure.Excerpt))
 				priorRequests = append(priorRequests, previous)
 				continue
 			}
@@ -79,18 +92,10 @@ func repairStillRunning(snapshot agentci.Snapshot) bool {
 	if len(snapshot.Diagnostics) != 0 {
 		return false
 	}
-	sha := snapshot.HeadSHA
-	if snapshot.TestMergeSHA != "" && slices.ContainsFunc(snapshot.Checks, func(check agentci.Check) bool {
-		return check.SHA == snapshot.TestMergeSHA
-	}) {
-		sha = snapshot.TestMergeSHA
-	}
-	required := slices.ContainsFunc(snapshot.Checks, func(check agentci.Check) bool { return check.SHA == sha && check.Required })
+	checks := snapshot.SelectedChecks()
+	required := slices.ContainsFunc(checks, func(check agentci.Check) bool { return check.Required })
 	var failed, running bool
-	for _, check := range snapshot.Checks {
-		if check.SHA != sha {
-			continue
-		}
+	for _, check := range checks {
 		if check.Status == "failed" {
 			failed = true
 		}
@@ -107,11 +112,16 @@ func repairStillRunning(snapshot agentci.Snapshot) bool {
 	return failed && running
 }
 
-func (c *controller) previousRepair(ctx context.Context, book ledger, failure autorequest.Failure) (int64, error) {
+func (c *controller) previousRepair(ctx context.Context, book ledger, plan agentci.RepairPlan, failure autorequest.Failure) (int64, error) {
 	for i := len(book.requests) - 1; i >= 0; i-- {
 		request := book.requests[i]
 		assignment, found := book.assignments[request.id]
-		if !found || !book.completed[request.id] || !assignment.Automatic || !slices.Contains(assignment.FailureKeys, failure.Key) {
+		if !found || !book.completed[request.id] || !assignment.Automatic {
+			continue
+		}
+		if !slices.Contains(assignment.FailureKeys, failure.Key) && !slices.ContainsFunc(request.request.Failures, func(prior autorequest.Failure) bool {
+			return slices.Contains(assignment.FailureKeys, prior.Key) && plan.MatchesFailure(failure, prior)
+		}) {
 			continue
 		}
 		for sha, requestID := range book.published {
@@ -156,7 +166,7 @@ func (c *controller) retryInfrastructure(ctx context.Context, book ledger, repor
 	if err := c.current(ctx); err != nil {
 		return err
 	}
-	if err := agentci.RerunFailedJobs(ctx, c.client, id); err != nil {
+	if err := c.client.RerunFailedActionsJobs(ctx, id); err != nil {
 		observed, readErr := c.infrastructureRun(ctx, id)
 		if readErr != nil || observed.RunAttempt <= 1 {
 			diagnostic := fmt.Sprintf("GitHub did not confirm the retry for [this CI run](%s). Check the run before rerunning its failed jobs.", link)

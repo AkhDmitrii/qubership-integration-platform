@@ -156,6 +156,34 @@ func DecodeGitHubEvent(name string, payload GitHubPayload, repo string, state *S
 	return event
 }
 
+type RevisionRunIdentity struct {
+	PullNumber int64
+	RequestID  int64
+	Automatic  bool
+}
+
+// RevisionIdentity reads the PR and request IDs from the agent-work workflow title.
+// A malformed request ID leaves the PR number available to its coordinator.
+func (run WorkflowRun) RevisionIdentity() (RevisionRunIdentity, error) {
+	var identity RevisionRunIdentity
+	kind, rest, _ := strings.Cut(run.DisplayTitle, "|")
+	switch {
+	case kind == "qip-agent-auto-revise" && run.Event == "workflow_dispatch":
+		identity.Automatic = true
+	case kind == "qip-agent-revise" && run.Event == "issue_comment":
+	default:
+		return identity, fmt.Errorf("unexpected revision workflow title or event")
+	}
+	pull, request, _ := strings.Cut(rest, "|")
+	var err error
+	identity.PullNumber, err = PositiveID(pull)
+	if err != nil {
+		return identity, err
+	}
+	identity.RequestID, err = PositiveID(request)
+	return identity, err
+}
+
 type WorkRunIdentity struct {
 	IssueNumber                 int64
 	ExecutionID                 string

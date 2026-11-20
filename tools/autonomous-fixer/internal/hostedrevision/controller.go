@@ -174,9 +174,8 @@ func (c *Controller) jobCurrent(ctx context.Context, a Assignment) (bool, error)
 	workflow := ".github/workflows/agent-work.yaml"
 	branch := c.repo.DefaultBranch
 	validPath := actual.Path == workflow || actual.Path == workflow+"@"+branch || actual.Path == workflow+"@refs/heads/"+branch
-	event, prefix := "issue_comment", "qip-agent-revise"
+	identity, err := actual.RevisionIdentity()
 	if a.Automatic {
-		event, prefix = "workflow_dispatch", "qip-agent-auto-revise"
 		var expected struct {
 			ID   int64  `json:"id"`
 			Path string `json:"path"`
@@ -189,8 +188,8 @@ func (c *Controller) jobCurrent(ctx context.Context, a Assignment) (bool, error)
 		}
 	}
 	if actual.ID != a.Run.RunID || actual.RunAttempt != a.Run.RunAttempt || !agentpr.SameRepository(actual.HeadRepository, c.repo) ||
-		actual.Event != event || !validPath || actual.HeadBranch != branch || actual.HeadSHA != a.WorkflowSHA ||
-		actual.DisplayTitle != fmt.Sprintf("%s|%d|%d", prefix, a.PullNumber, a.CommentID) {
+		err != nil || !validPath || actual.HeadBranch != branch || actual.HeadSHA != a.WorkflowSHA ||
+		identity != (fixer.RevisionRunIdentity{PullNumber: a.PullNumber, RequestID: a.CommentID, Automatic: a.Automatic}) {
 		return false, fmt.Errorf("the revision workflow differs from the recorded run")
 	}
 	return actual.Status != "completed", nil
@@ -332,7 +331,7 @@ func (c *Controller) OpenRevision(ctx context.Context) (bool, error) {
 		Run: c.cfg.Run, OriginRun: state.PilotCandidate.Run,
 	}
 	if c.automatic {
-		if err := c.prepareAutomatic(ctx, actors, pr, command, seen, &a); err != nil {
+		if err := c.prepareAutomatic(ctx, actors, pr, command, seen, comments, &a); err != nil {
 			return false, err
 		}
 	} else {
@@ -413,6 +412,15 @@ func (a Assignment) matchesCommand(command fixer.Comment) bool {
 }
 
 func (c *Controller) Verify(ctx context.Context, a Assignment) (fixer.Checkpoint, error) {
+	return c.verify(ctx, &a)
+}
+
+func (c *Controller) VerifyWork(ctx context.Context, a Assignment) (Assignment, fixer.Checkpoint, error) {
+	checkpoint, err := c.verify(ctx, &a)
+	return a, checkpoint, err
+}
+
+func (c *Controller) verify(ctx context.Context, a *Assignment) (fixer.Checkpoint, error) {
 	if a.RepositoryID != c.repo.ID || a.PullNumber != c.pullNumber || a.CommentID != c.commentID ||
 		a.Run.RunID != c.cfg.Run.RunID || a.WorkflowSHA != c.cfg.WorkflowSHA || a.Automatic != c.automatic {
 		return fixer.Checkpoint{}, ErrUnauthorized
@@ -440,26 +448,26 @@ func (c *Controller) Verify(ctx context.Context, a Assignment) (fixer.Checkpoint
 	if err != nil {
 		return fixer.Checkpoint{}, err
 	}
-	checkpoint, err := c.checkpoint(ctx, state, a)
-	if err != nil {
-		return fixer.Checkpoint{}, err
-	}
-	if !a.MatchesCheckpoint(checkpoint) {
-		return fixer.Checkpoint{}, ErrUnauthorized
-	}
 	if c.automatic {
 		if !fixer.Allowed(actors, state.Initiator) {
 			return fixer.Checkpoint{}, ErrUnauthorized
 		}
-		if _, err := c.jobCurrent(ctx, a); err != nil {
+		if _, err := c.jobCurrent(ctx, *a); err != nil {
 			return fixer.Checkpoint{}, err
 		}
-		if _, err := c.completedHead(pr, a, ""); err != nil {
+		if _, err := c.completedHead(pr, *a, ""); err != nil {
 			return fixer.Checkpoint{}, err
 		}
 		if err := c.verifyAutomatic(ctx, actors, pr, command, a); err != nil {
 			return fixer.Checkpoint{}, err
 		}
+	}
+	checkpoint, err := c.checkpoint(ctx, state, *a)
+	if err != nil {
+		return fixer.Checkpoint{}, err
+	}
+	if !a.MatchesCheckpoint(checkpoint) {
+		return fixer.Checkpoint{}, ErrUnauthorized
 	}
 	return checkpoint, nil
 }

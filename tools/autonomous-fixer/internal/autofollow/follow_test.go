@@ -229,7 +229,7 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 func (f *fixture) worker(run, request int64, automatic bool, status string) fixer.WorkflowRun {
 	title, event := fmt.Sprintf("qip-agent-revise|2|%d", request), "issue_comment"
 	if automatic {
-		title, event = dispatchTitle(2, request), "workflow_dispatch"
+		title, event = fmt.Sprintf("qip-agent-auto-revise|2|%d", request), "workflow_dispatch"
 	}
 	return fixer.WorkflowRun{ID: run, RunAttempt: 1, WorkflowID: 12, HeadSHA: baseSHA, HeadBranch: "main", HeadRepository: f.pr.Base.Repo,
 		DisplayTitle: title, Path: ".github/workflows/agent-work.yaml", Event: event, Status: status}
@@ -469,11 +469,11 @@ func TestDispatchedBatchReachesWorkerCheckpoint(t *testing.T) {
 		t.Fatalf("admitted = %v, %v", admitted, err)
 	}
 	a, found, err := worker.Assignment(ctx)
-	if err != nil || !found || len(a.Feedback) != 2 {
+	if err != nil || !found {
 		t.Fatalf("assignment = %+v, %v", a, err)
 	}
-	checkpoint, err := worker.Verify(ctx, a)
-	if err != nil || checkpoint.Contract.BaseSHA != headSHA || checkpoint.RevisionSHA256 == "" {
+	a, checkpoint, err := worker.VerifyWork(ctx, a)
+	if err != nil || len(a.Feedback) != 2 || checkpoint.Contract.BaseSHA != headSHA || checkpoint.RevisionSHA256 == "" {
 		t.Fatalf("checkpoint = %+v, %v", checkpoint, err)
 	}
 	if admitted, err := worker.OpenRevision(ctx); err != nil || admitted {

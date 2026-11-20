@@ -160,6 +160,10 @@ func (c *Controller) post(ctx context.Context, body string) error {
 }
 
 func (c *Controller) postReceipt(ctx context.Context, a Assignment) error {
+	if a.Automatic {
+		// The checkpoint binds the feedback loaded from the selected reviews and checks.
+		a.Feedback = nil
+	}
 	data, err := json.Marshal(receipt{Assignment: a, CheckpointSHA: a.checkpointSHA})
 	if err != nil {
 		return err

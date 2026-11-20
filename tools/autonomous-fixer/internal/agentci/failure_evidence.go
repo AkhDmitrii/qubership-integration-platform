@@ -33,7 +33,7 @@ type annotation struct {
 }
 
 type failureEvidence struct {
-	excerpt        string
+	diagnostics    []string
 	infrastructure bool
 	unavailable    bool
 }
@@ -63,7 +63,7 @@ func inspectFailure(ctx context.Context, client *fixer.GitHubClient, check Check
 	var dependencyFailure dependencyErrors
 	for _, note := range annotations {
 		if note.Level == "failure" {
-			diagnostics = readDiagnostics(diagnostics, &dependencyFailure, note.Title+"\n"+note.Message)
+			diagnostics = readDiagnostics(diagnostics, &dependencyFailure, note.Title+"\n"+note.Message, note.Path)
 		}
 	}
 	var readSteps int
@@ -84,7 +84,7 @@ func inspectFailure(ctx context.Context, client *fixer.GitHubClient, check Check
 			if beforeRepositorySteps(job) && runnerFailure(log) {
 				return failureEvidence{infrastructure: true}
 			}
-			diagnostics = readDiagnostics(diagnostics, &dependencyFailure, log)
+			diagnostics = readDiagnostics(diagnostics, &dependencyFailure, log, "")
 		} else {
 			logUnavailable = true
 		}
@@ -92,7 +92,10 @@ func inspectFailure(ctx context.Context, client *fixer.GitHubClient, check Check
 	if len(diagnostics) == 0 && dependencyFailure.transient && !dependencyFailure.configuration && !logUnavailable {
 		return failureEvidence{infrastructure: true}
 	}
-	return failureEvidence{excerpt: client.RedactGitHubToken(redactProviderTokens(strings.Join(diagnostics, "\n"))), unavailable: logUnavailable}
+	for i, diagnostic := range diagnostics {
+		diagnostics[i] = client.RedactGitHubToken(redactProviderTokens(diagnostic))
+	}
+	return failureEvidence{diagnostics: diagnostics, unavailable: logUnavailable}
 }
 
 func beforeRepositorySteps(job workflowJob) bool {
@@ -141,14 +144,12 @@ var diagnosticPatterns = []diagnosticPattern{
 	{regexp.MustCompile(`^(` + sourcePath + `\.tsx?)\((\d+),(\d+)\):\s+error (TS\d+):`), `TypeScript reported $4 at $1:$2:$3.`},
 	{regexp.MustCompile(`^(` + sourcePath + `\.go):(\d+):(\d+):\s+(?:undefined:|cannot |declared and not used:|syntax error:|missing |too many |not enough )`), `Go reported a source error at $1:$2:$3.`},
 	{regexp.MustCompile(`^\[ERROR\]\s+(` + sourcePath + `\.java):\[(\d+),(\d+)\]`), `The Java compiler reported a source error at $1:$2:$3.`},
-	{regexp.MustCompile(`^(?:\[ERROR\]\s+)?(` + sourcePath + `\.java):(\d+)(?::\d+)?: .*\[([A-Za-z][A-Za-z0-9]+)\]$`), `Checkstyle reported $3 at $1:$2.`},
+	{regexp.MustCompile(`^(?:\[ERROR\]\s+)?(` + sourcePath + `\.java):(\d+(?::\d+)?): .*\[([A-Za-z][A-Za-z0-9]+)\]$`), `Checkstyle reported $3 at $1:$2.`},
 	{regexp.MustCompile(`^(` + sourcePath + `\.go):(\d+):(\d+): .*\(([a-z][a-z0-9]+)\)$`), `golangci-lint reported $4 at $1:$2:$3.`},
-	{regexp.MustCompile(`^(\d+):(\d+)\s+error\s+.+\s+(@?[a-z][a-z0-9/-]+)\s*$`), `ESLint reported $3 at line $1, column $2.`},
-	{regexp.MustCompile(`^--- FAIL:\s+(Test[A-Za-z0-9_]+)(?:\s+\(|/)`), `Go reported a failure in $1.`},
+	{regexp.MustCompile(`^--- FAIL:\s+(Test[A-Za-z0-9_]+(?:/[a-zA-Z0-9_.@-]+)*)\s+\(`), `Go reported a failure in $1.`},
 	{regexp.MustCompile(`^FAIL\s+(` + sourcePath + `\.(?:test|spec)\.[cm]?[jt]sx?)\s*(?:$|\()`), `Jest reported a failure in $1.`},
 	{regexp.MustCompile(`^\d+\)\s+\[[a-zA-Z0-9_-]+\]\s+›\s+(` + sourcePath + `\.spec\.[jt]s):(\d+):(\d+)\s+›`), `Playwright reported a failed test at $1:$2:$3.`},
 	{regexp.MustCompile(`^\[ERROR\]\s+([A-Za-z0-9_.$]+Test[A-Za-z0-9_.$]*)\s*»`), `Maven reported a failure in $1.`},
-	{regexp.MustCompile(`^\[ERROR\]\s+Tests run: \d+, Failures: ([1-9]\d*), Errors: \d+`), `Maven reported $1 failed tests.`},
 }
 
 type dependencyErrors struct {
@@ -159,7 +160,26 @@ type dependencyErrors struct {
 var mavenDownloadError = regexp.MustCompile(`^\[ERROR\].*Could not transfer artifact .*\(https://(?:repo\.maven\.apache\.org|repo1\.maven\.org)/[^)]*\).*status code: ([45]\d\d)\b`)
 var npmDownloadError = regexp.MustCompile(`(?i)^npm (?:error|ERR!) ([45]\d\d)\s+.* - GET https://(?:registry\.npmjs\.org|npm\.pkg\.github\.com)/`)
 
-func readDiagnostics(diagnostics []string, dependency *dependencyErrors, output string) []string {
+var eslintFile = regexp.MustCompile(`^` + sourcePath + `\.[cm]?[jt]sx?$`)
+var eslintFinding = regexp.MustCompile(`^(\d+):(\d+)\s+(error|warning)\s+.+?\s{2,}(@?[a-z][a-z0-9_/-]+)\s*$`)
+
+func eslintPath(value string) string {
+	if !eslintFile.MatchString(value) {
+		return ""
+	}
+	value = strings.ReplaceAll(value, `\`, "/")
+	if workspace, ok := strings.CutPrefix(value, "/home/runner/work/"); ok {
+		parts := strings.SplitN(workspace, "/", 3)
+		if len(parts) == 3 && parts[0] == parts[1] {
+			return parts[2]
+		}
+	}
+	return strings.TrimPrefix(value, "./")
+}
+
+func readDiagnostics(diagnostics []string, dependency *dependencyErrors, output, annotationPath string) []string {
+	annotationPath = eslintPath(annotationPath)
+	file := annotationPath
 	for line := range strings.SplitSeq(output, "\n") {
 		if len(diagnostics) >= maxDiagnostics {
 			break
@@ -167,6 +187,20 @@ func readDiagnostics(diagnostics []string, dependency *dependencyErrors, output 
 		line = ansiSequence.ReplaceAllString(line, "")
 		line = logTimestamp.ReplaceAllString(line, "")
 		line = strings.TrimSpace(strings.TrimPrefix(line, "##[error]"))
+		if path := eslintPath(line); path != "" {
+			file = path
+			continue
+		}
+		if match := eslintFinding.FindStringSubmatch(line); match != nil {
+			if file != "" && match[3] == "error" {
+				value := fmt.Sprintf("ESLint reported %s at %s:%s:%s.", match[4], file, match[1], match[2])
+				if len(value) <= 200 && !slices.Contains(diagnostics, value) {
+					diagnostics = append(diagnostics, value)
+				}
+			}
+			continue
+		}
+		file = annotationPath
 		for _, downloadError := range []*regexp.Regexp{mavenDownloadError, npmDownloadError} {
 			if match := downloadError.FindStringSubmatch(line); match != nil {
 				switch match[1] {

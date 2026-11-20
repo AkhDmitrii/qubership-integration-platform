@@ -17,40 +17,35 @@ type RepairPlan struct {
 	Failures  []autorequest.Failure
 	RetryRuns []int64
 	Human     []string
+	jobs      map[string]string
 }
 
 func PlanRepair(ctx context.Context, client *fixer.GitHubClient, snapshot Snapshot) (RepairPlan, error) {
 	var plan RepairPlan
-	if len(snapshot.Diagnostics) != 0 || len(snapshot.Checks) == 0 {
+	if len(snapshot.Diagnostics) != 0 {
 		return plan, nil
 	}
-	sha := snapshot.HeadSHA
-	if snapshot.TestMergeSHA != "" && slices.ContainsFunc(snapshot.Checks, func(check Check) bool { return check.SHA == snapshot.TestMergeSHA }) {
-		sha = snapshot.TestMergeSHA
-	}
-	hasRequired := slices.ContainsFunc(snapshot.Checks, func(check Check) bool { return check.SHA == sha && check.Required })
-	var selected []Check
-	for _, check := range snapshot.Checks {
-		if check.SHA != sha {
-			continue
-		}
+	checks := snapshot.SelectedChecks()
+	hasRequired := slices.ContainsFunc(checks, func(check Check) bool { return check.Required })
+	var completed []Check
+	for _, check := range checks {
 		if !terminalCheck(check.Status) || check.Workflow != "" && check.action.Status != "completed" {
 			if check.Required || !hasRequired {
 				return plan, nil
 			}
 			continue
 		}
-		selected = append(selected, check)
+		completed = append(completed, check)
 	}
-	if len(selected) == 0 {
+	if len(completed) == 0 {
 		return plan, nil
 	}
 	plan.Ready = true
 
-	seen := make(map[string]bool)
+	plan.jobs = make(map[string]string)
 	retry := make(map[int64]string)
 	blocked := make(map[int64]bool)
-	for _, check := range selected {
+	for _, check := range completed {
 		if check.Status != "failed" && check.Status != "cancelled" {
 			continue
 		}
@@ -71,12 +66,16 @@ func PlanRepair(ctx context.Context, client *fixer.GitHubClient, snapshot Snapsh
 		case evidence.infrastructure:
 			plan.Human = append(plan.Human, name+" needs a runner or service investigation.")
 			blocked[check.action.ID] = true
-		case evidence.excerpt != "" && check.Conclusion == "failure":
-			key := failureKey(check, evidence.excerpt)
-			if !seen[key] {
-				seen[key] = true
+		case len(evidence.diagnostics) > 0 && check.Conclusion == "failure":
+			job := failureJob(check)
+			for _, excerpt := range evidence.diagnostics {
+				key := failureKey(job, excerpt)
+				if _, seen := plan.jobs[key]; seen {
+					continue
+				}
+				plan.jobs[key] = job
 				plan.Failures = append(plan.Failures, autorequest.Failure{Key: key, Name: name,
-					URL: client.ActionsJobURL(check.action.ID, check.ID), Excerpt: evidence.excerpt})
+					URL: client.ActionsJobURL(check.action.ID, check.ID), Excerpt: excerpt})
 			}
 			blocked[check.action.ID] = true
 		case evidence.unavailable:
@@ -112,23 +111,52 @@ func terminalCheck(status string) bool {
 var diagnosticLocation = regexp.MustCompile(`(?::\d+(?::\d+)?| at line \d+, column \d+)\.$`)
 var testFailureCount = regexp.MustCompile(`Maven reported \d+ failed tests\.`)
 
-func failureKey(check Check, excerpt string) string {
+func failureJob(check Check) string {
+	return fmt.Sprintf("%d\x00%d\x00%s", check.AppID, check.action.WorkflowID, check.Name)
+}
+
+func failureKey(job, excerpt string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(job+"\x00"+excerpt)))
+}
+
+func legacyFailureKey(job, excerpt string) string {
 	signatures := strings.Split(excerpt, "\n")
 	for i, signature := range signatures {
 		signature = diagnosticLocation.ReplaceAllString(signature, ".")
 		signatures[i] = testFailureCount.ReplaceAllString(signature, "Maven reported failed tests.")
 	}
 	slices.Sort(signatures)
-	identity := fmt.Sprintf("%d\x00%d\x00%s\x00%s", check.AppID, check.action.WorkflowID, check.Name, strings.Join(slices.Compact(signatures), "\n"))
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
+	return failureKey(job, strings.Join(slices.Compact(signatures), "\n"))
+}
+
+func (plan RepairPlan) MatchesFailure(current, prior autorequest.Failure) bool {
+	if current.Key == prior.Key {
+		return true
+	}
+	job, found := plan.jobs[current.Key]
+	return found && slices.Contains(strings.Split(prior.Excerpt, "\n"), current.Excerpt) && legacyFailureKey(job, prior.Excerpt) == prior.Key
+}
+
+func (plan RepairPlan) ResolveFailure(requested autorequest.Failure) (autorequest.Failure, bool) {
+	if i := slices.IndexFunc(plan.Failures, func(current autorequest.Failure) bool { return current.Key == requested.Key }); i >= 0 {
+		return plan.Failures[i], true
+	}
+	var resolved autorequest.Failure
+	for excerpt := range strings.SplitSeq(requested.Excerpt, "\n") {
+		i := slices.IndexFunc(plan.Failures, func(current autorequest.Failure) bool {
+			return current.Excerpt == excerpt && plan.MatchesFailure(current, requested)
+		})
+		if i < 0 {
+			return autorequest.Failure{}, false
+		}
+		resolved = plan.Failures[i]
+	}
+	resolved.Key, resolved.Excerpt = requested.Key, requested.Excerpt
+	return resolved, true
 }
 
 func retryableRun(run actionRun) bool {
 	return run.Attempt == 1 && (run.Event == "push" || run.Event == "pull_request") && run.Conclusion == "failure"
-}
-
-func RerunFailedJobs(ctx context.Context, client *fixer.GitHubClient, runID int64) error {
-	return client.RerunFailedActionsJobs(ctx, runID)
 }
 
 func repairName(name string) string {

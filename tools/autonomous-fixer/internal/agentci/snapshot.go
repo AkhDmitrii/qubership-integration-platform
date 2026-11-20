@@ -33,6 +33,47 @@ type Check struct {
 	action     actionRun
 }
 
+type checkIdentity struct {
+	name, kind, workflow string
+	appID, workflowID    int64
+}
+
+func (check Check) identity() checkIdentity {
+	identity := checkIdentity{name: check.Name, kind: check.Kind, appID: check.AppID, workflowID: check.action.WorkflowID}
+	if identity.workflowID == 0 {
+		identity.workflow = check.Workflow
+	}
+	return identity
+}
+
+func (snapshot Snapshot) SelectedChecks() []Check {
+	indexes := snapshot.selectedCheckIndexes()
+	checks := make([]Check, 0, len(indexes))
+	for _, index := range indexes {
+		checks = append(checks, snapshot.Checks[index])
+	}
+	return checks
+}
+
+func (snapshot Snapshot) selectedCheckIndexes() []int {
+	mergeChecks := make(map[checkIdentity]bool)
+	if snapshot.TestMergeSHA != "" {
+		for _, check := range snapshot.Checks {
+			if check.SHA == snapshot.TestMergeSHA {
+				mergeChecks[check.identity()] = true
+			}
+		}
+	}
+	var indexes []int
+	for i, check := range snapshot.Checks {
+		if (snapshot.TestMergeSHA != "" && check.SHA == snapshot.TestMergeSHA) ||
+			(check.SHA == snapshot.HeadSHA && !mergeChecks[check.identity()]) {
+			indexes = append(indexes, i)
+		}
+	}
+	return indexes
+}
+
 const ObserverWorkflow = "QIP agent CI observation"
 
 var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -43,8 +84,9 @@ func Read(ctx context.Context, client *fixer.GitHubClient, headSHA, mergeSHA str
 		return snapshot, fmt.Errorf("invalid pull request head SHA")
 	}
 	head, diagnostics := readCommit(ctx, client, headSHA)
+	snapshot.Checks = append(snapshot.Checks, head...)
 	snapshot.Diagnostics = diagnostics
-	observed, effectiveSHA := head, headSHA
+	missingSHA := headSHA
 	if mergeSHA != "" && mergeSHA != headSHA {
 		if err := verifyTestMerge(ctx, client, headSHA, mergeSHA); err != nil {
 			snapshot.Diagnostics = append(snapshot.Diagnostics, fmt.Sprintf("The test merge commit could not be verified (%v).", err))
@@ -52,31 +94,31 @@ func Read(ctx context.Context, client *fixer.GitHubClient, headSHA, mergeSHA str
 			snapshot.TestMergeSHA = mergeSHA
 			merge, diagnostics := readCommit(ctx, client, mergeSHA)
 			snapshot.Diagnostics = append(snapshot.Diagnostics, diagnostics...)
-			observed = append(observed, merge...)
+			snapshot.Checks = append(snapshot.Checks, merge...)
 			if len(merge) > 0 {
-				effectiveSHA = mergeSHA
+				missingSHA = mergeSHA
 			}
 		}
 	}
+	selected := snapshot.selectedCheckIndexes()
 	for _, requirement := range uniqueRequirements(required) {
 		found := false
-		for i := range observed {
-			check := &observed[i]
-			if check.SHA == effectiveSHA && check.Name == requirement.Name && (requirement.AppID == 0 || check.AppID == requirement.AppID) {
+		for _, i := range selected {
+			check := &snapshot.Checks[i]
+			if check.Name == requirement.Name && (requirement.AppID == 0 || check.AppID == requirement.AppID) {
 				check.Required = true
 				found = true
 			}
 		}
 		if !found && len(snapshot.Diagnostics) == 0 {
-			snapshot.Checks = append(snapshot.Checks, Check{Name: requirement.Name, Kind: "required", SHA: effectiveSHA, AppID: requirement.AppID, Status: "missing", Required: true})
+			snapshot.Checks = append(snapshot.Checks, Check{Name: requirement.Name, Kind: "required", SHA: missingSHA, AppID: requirement.AppID, Status: "missing", Required: true})
 		}
 	}
-	snapshot.Checks = append(snapshot.Checks, observed...)
 	slices.SortFunc(snapshot.Checks, func(a, b Check) int {
 		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Workflow, b.Workflow), cmp.Compare(a.SHA, b.SHA),
 			cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.AppID, b.AppID), cmp.Compare(a.URL, b.URL))
 	})
-	snapshot.Status = summarize(snapshot.Checks, len(snapshot.Diagnostics) > 0)
+	snapshot.Status = summarize(snapshot)
 	return snapshot, nil
 }
 
@@ -255,13 +297,14 @@ func checkStatus(status, conclusion string) string {
 	}
 }
 
-func summarize(checks []Check, incomplete bool) string {
+func summarize(snapshot Snapshot) string {
+	checks := snapshot.SelectedChecks()
 	for _, status := range []string{"failed", "cancelled", "missing", "pending", "unknown"} {
 		if slices.ContainsFunc(checks, func(check Check) bool { return check.Status == status }) {
 			return status
 		}
 	}
-	if incomplete || len(checks) == 0 {
+	if len(snapshot.Diagnostics) > 0 || len(checks) == 0 {
 		return "unknown"
 	}
 	return "passed"

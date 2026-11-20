@@ -85,16 +85,17 @@ func findComment(ctx context.Context, client *fixer.GitHubClient, path, marker s
 }
 
 func commentBody(snapshot Snapshot, repository, marker string) string {
+	checks := snapshot.SelectedChecks()
 	var body strings.Builder
 	fmt.Fprintf(&body, "## CI observation\n\nPR head `%s`\n\n", snapshot.HeadSHA)
 	if snapshot.TestMergeSHA != "" {
 		fmt.Fprintf(&body, "GitHub test merge `%s`\n\n", snapshot.TestMergeSHA)
 	}
 	fmt.Fprintf(&body, "Observed CI status **%s**.\n\n", snapshot.Status)
-	if len(snapshot.Checks) == 0 {
+	if len(checks) == 0 {
 		body.WriteString("No check results are available for this head.\n\n")
 	}
-	if slices.ContainsFunc(snapshot.Checks, func(check Check) bool { return check.Status == "missing" }) {
+	if slices.ContainsFunc(checks, func(check Check) bool { return check.Status == "missing" }) {
 		body.WriteString("GitHub has yet to report results for the required checks marked missing. Check whether their workflows ran for this PR.\n\n")
 	}
 	for _, diagnostic := range snapshot.Diagnostics {
@@ -104,9 +105,8 @@ func commentBody(snapshot Snapshot, repository, marker string) string {
 		body.WriteByte('\n')
 	}
 	body.WriteString("This observation refreshes when PR workflows complete and during the daily check.\n\n")
-	if len(snapshot.Checks) > 0 {
+	if len(checks) > 0 {
 		body.WriteString("| Check | Status | Commit | Required |\n| --- | --- | --- | --- |\n")
-		checks := slices.Clone(snapshot.Checks)
 		slices.SortStableFunc(checks, func(a, b Check) int { return checkPriority(a) - checkPriority(b) })
 		for i, check := range checks {
 			label := tableText(check.Name)

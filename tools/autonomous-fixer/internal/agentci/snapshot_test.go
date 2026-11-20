@@ -125,15 +125,84 @@ func TestSnapshotUsesVerifiedTestMergeAndRejectsStaleTestMerge(t *testing.T) {
 				}
 				return
 			}
-			if len(snapshot.Checks) != 3 || snapshot.Status != "missing" || snapshot.TestMergeSHA != testMerge || !snapshot.Checks[2].Required {
-				t.Fatal("test merge check did not establish the active result", snapshot)
-			}
-			if !slices.ContainsFunc(snapshot.Checks, func(check Check) bool {
-				return check.Name == "head check" && check.Status == "missing" && check.SHA == testMerge
-			}) {
-				t.Fatal("head result incorrectly satisfied a test merge requirement", snapshot)
+			if len(snapshot.Checks) != 2 || snapshot.Status != "passed" || snapshot.TestMergeSHA != testMerge ||
+				!snapshot.Checks[0].Required || !snapshot.Checks[1].Required {
+				t.Fatal("checks on both commits did not satisfy their requirements", snapshot)
 			}
 		})
+	}
+}
+
+func TestSnapshotPrefersTestMergeForMatchingChecks(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/commits/" + testMerge:
+			fixture(w, map[string]any{"sha": testMerge, "parents": []map[string]string{{"sha": testBase}, {"sha": testHead}}})
+		case "/repos/org/repo/commits/" + testHead + "/check-runs":
+			fixture(w, map[string]any{"check_runs": []any{
+				rawCheck("Build", testHead, "completed", "failure", "github-actions", 15368, 1),
+				rawCheck("Build", testHead, "completed", "success", "github-actions", 15368, 2),
+				rawCheck("Build", testHead, "completed", "success", "service", 24, 3),
+			}})
+		case "/repos/org/repo/commits/" + testMerge + "/check-runs":
+			fixture(w, map[string]any{"check_runs": []any{rawCheck("Build", testMerge, "completed", "success", "github-actions", 15368, 4)}})
+		case "/repos/org/repo/actions/runs":
+			runs := []actionRun{{Name: "CI", SHA: testHead, Event: "push", Suite: 1, WorkflowID: 10},
+				{Name: "CI", SHA: testHead, Event: "push", Suite: 2, WorkflowID: 11}}
+			if r.URL.Query().Get("head_sha") == testMerge {
+				runs = []actionRun{{Name: "CI on merge", SHA: testMerge, Event: "pull_request", Suite: 4, WorkflowID: 10}}
+			}
+			fixture(w, map[string]any{"workflow_runs": runs})
+		case "/repos/org/repo/commits/" + testHead + "/statuses":
+			fixture(w, []map[string]string{{"context": "Build", "state": "success"}, {"context": "coverage", "state": "failure"}})
+		case "/repos/org/repo/commits/" + testMerge + "/statuses":
+			fixture(w, []map[string]string{{"context": "coverage", "state": "success"}})
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+			http.NotFound(w, r)
+		}
+	})
+	snapshot, err := Read(t.Context(), client, testHead, testMerge, []Requirement{{Name: "Build"}, {Name: "coverage"}})
+	if err != nil || snapshot.Status != "passed" || len(snapshot.Checks) != 7 {
+		t.Fatalf("observation = %+v, %v", snapshot, err)
+	}
+	var required []string
+	for _, check := range snapshot.Checks {
+		if check.Required {
+			required = append(required, fmt.Sprintf("%s/%s/%s/%d/%d", check.Name, check.SHA[:1], check.Kind, check.AppID, check.action.WorkflowID))
+		}
+	}
+	want := []string{"Build/a/check-run/24/0", "Build/a/commit-status/0/0", "Build/a/check-run/15368/11",
+		"Build/c/check-run/15368/10", "coverage/c/commit-status/0/0"}
+	if !slices.Equal(required, want) {
+		t.Fatalf("required checks = %v, want %v", required, want)
+	}
+	body := commentBody(snapshot, "org/repo", "")
+	if !strings.Contains(body, "| CI / Build | passed | Head | Yes |") ||
+		!strings.Contains(body, "| CI on merge / Build | passed | Test merge | Yes |") || strings.Contains(body, "| failed") {
+		t.Fatal("the comment did not display the selected results", body)
+	}
+}
+
+func TestRequiredWorkflowRulesUseConfiguredChecks(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/rules/branches/main":
+			fixture(w, []map[string]string{{"type": "workflows"}})
+		case "/repos/org/repo/branches/main":
+			fixture(w, map[string]bool{"protected": true})
+		default:
+			t.Errorf("unexpected request %s", r.URL)
+			http.NotFound(w, r)
+		}
+	})
+	required, diagnostics := Required(t.Context(), client, "main", " \n ")
+	if len(required) != 0 || len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "AGENT_CI_REQUIRED_CHECKS") {
+		t.Fatalf("workflow rules without configured checks = %v, %v", required, diagnostics)
+	}
+	required, diagnostics = Required(t.Context(), client, "main", " \n build \n test \n ")
+	if !slices.Equal(required, []Requirement{{Name: "build"}, {Name: "test"}}) || len(diagnostics) != 0 {
+		t.Fatalf("workflow rules with configured checks = %v, %v", required, diagnostics)
 	}
 }
 
