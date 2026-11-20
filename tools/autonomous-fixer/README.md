@@ -73,7 +73,8 @@ The engineering pilot and pre-ready triage use the following workflows.
 | `.github/workflows/agent-work.yaml` | Admits the exact run and saves its checkpoint. In pilot mode it starts OpenCode, then exports the author result and evidence. |
 | `.github/workflows/agent-publish.yaml` | Verifies a selected pilot candidate and publishes a draft pull request |
 | `.github/workflows/agent-revision-cache.yaml` | Prepares the Maven dependency cache from the default branch for PR revisions. |
-| `.github/workflows/agent-ci.yaml` | Reports check runs and commit statuses on open engineering PRs. |
+| `.github/workflows/agent-review-submitted.yaml` | Wakes the default-branch coordinator when a review is submitted. |
+| `.github/workflows/agent-ci.yaml` | Reports CI and batches actionable failures with requested review changes for the current PR head. |
 | `.github/workflows/agent-outcome.yaml` | Records the final patch comparison when an engineering PR closes. |
 | `.github/workflows/agent-pre-ready.yaml` | Offers read-only triage on issue opening and in authorized manual runs |
 

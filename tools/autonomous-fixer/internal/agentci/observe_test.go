@@ -60,6 +60,9 @@ func observerTestFixture(t *testing.T) *observerFixture {
 			fixture(w, f.repository)
 		case "GET /repos/org/repo/pulls/44":
 			pr := f.pr
+			if r.Header.Get("X-GitHub-Api-Version") != "2022-11-28" {
+				pr.MergeSHA = ""
+			}
 			f.prReads++
 			if f.prReads >= 2 {
 				if f.changeOnRead {
@@ -84,6 +87,9 @@ func observerTestFixture(t *testing.T) *observerFixture {
 			f.checkReads++
 			fixture(w, map[string][]string{"check_runs": {}})
 		case "GET /repos/org/repo/commits/" + testMerge:
+			if r.Header.Get("X-GitHub-Api-Version") != "2026-03-10" {
+				t.Error("merge commit verification changed the API version")
+			}
 			fixture(w, map[string]any{"sha": testMerge, "parents": []map[string]string{{"sha": testBase}, {"sha": testHead}}})
 		case "GET /repos/org/repo/commits/" + testMerge + "/statuses":
 			fixture(w, []string{})
@@ -183,6 +189,9 @@ func TestObservationRequiresCanonicalPublicationAndUnchangedPR(t *testing.T) {
 			}
 			if want == "" && len(reports) != 0 || want != "" && (len(reports) != 1 || reports[0].Disposition != want) {
 				t.Fatalf("observation = %+v, want %q", reports, want)
+			}
+			if name == "test merge completion" && reports[0].CI.TestMergeSHA != testMerge {
+				t.Fatal("observation did not verify the test merge SHA", reports[0].CI)
 			}
 			f.mu.Lock()
 			defer f.mu.Unlock()

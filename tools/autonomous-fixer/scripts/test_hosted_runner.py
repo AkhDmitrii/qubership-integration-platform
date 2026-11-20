@@ -139,6 +139,19 @@ class HostedIssueTest(unittest.TestCase):
             self.assertIn(b"differs from the admitted revision", tampered.stderr)
             self.assertFalse(command[-1].exists())
 
+    def test_renders_automatic_ci_evidence_as_quoted_feedback(self):
+        checkpoint, issue = admitted_issue()
+        job_url = f"https://github.com/{REPO}/actions/runs/84/job/21"
+        revision = {
+            "automatic": True, "head": checkpoint["contract"]["baseSha"], "issue": issue["number"],
+            "commentId": 12, "pullNumber": 900, "originRun": {"runId": 52, "runAttempt": 1},
+            "feedback": [{"kind": "ci", "url": job_url, "body": "Compile UI.\nTypeScript reported TS1234 at ui/view.ts:42:8."}],
+        }
+        task = hosted_issue.render_revision(revision, checkpoint, REPO)
+        self.assertIn(f"[Automatic request](https://github.com/{REPO}/pull/900#issuecomment-12)", task)
+        self.assertIn(f"[CI check]({job_url})", task)
+        self.assertIn("> Compile UI.\n> TypeScript reported TS1234 at ui/view.ts:42:8.", task)
+
     def test_attachments_leave_a_receipt_on_download_failure(self):
         checkpoint, issue = admitted_issue(IMAGE)
 

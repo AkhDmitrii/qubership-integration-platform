@@ -140,7 +140,12 @@ func (a *testAPI) serve(w http.ResponseWriter, r *http.Request) {
 			Ref    string            `json:"ref"`
 			Inputs map[string]string `json:"inputs"`
 		}
-		json.NewDecoder(r.Body).Decode(&input)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil {
+			http.Error(w, "invalid workflow dispatch request", http.StatusUnprocessableEntity)
+			return
+		}
 		issue, _ := strconv.ParseInt(input.Inputs["issue"], 10, 64)
 		generation, _ := strconv.Atoi(input.Inputs["generation"])
 		version, _ := strconv.Atoi(input.Inputs["contract_version"])

@@ -144,7 +144,7 @@ func (a *GitHubAdapter) Perform(ctx context.Context, effect Effect) error {
 			RunID int64 `json:"workflow_run_id"`
 		}
 		inputs := map[string]string{"issue": strconv.FormatInt(a.Task.IssueNumber, 10), "execution": execution.ID, "generation": strconv.Itoa(execution.Generation), "contract_version": strconv.Itoa(execution.ContractVersion), "trusted_sha": a.expected(*execution).TrustedSHA, "mode": executionMode(execution.Mode)}
-		reply, err := a.Client.request(ctx, "POST", "/actions/workflows/agent-work.yaml/dispatches", map[string]any{"ref": a.DefaultBranch, "return_run_details": true, "inputs": inputs}, &response)
+		reply, err := a.Client.request(ctx, "POST", "/actions/workflows/agent-work.yaml/dispatches", map[string]any{"ref": a.DefaultBranch, "inputs": inputs}, &response)
 		a.dispatch = &DispatchDiagnostic{executionID: execution.ID, Receipt: "unconfirmed", DispatchHTTPStatus: reply.status}
 		switch {
 		case reply.status >= 200 && reply.status < 300:

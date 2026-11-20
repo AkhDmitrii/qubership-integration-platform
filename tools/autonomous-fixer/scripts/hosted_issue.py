@@ -107,9 +107,10 @@ def render_revision(revision, checkpoint, repository):
     origin = revision["originRun"]
     pr = f"https://github.com/{repository}/pull/{pull}"
     evidence = f"https://github.com/{repository}/actions/runs/{origin['runId']}/attempts/{origin['runAttempt']}"
+    request = "Automatic request" if revision.get("automatic") else "Maintainer request"
     sections = [
         "\n## Pull request revision\n",
-        f"\n[Maintainer request]({pr}#issuecomment-{command}) at `{revision['head']}`.\n",
+        f"\n[{request}]({pr}#issuecomment-{command}) at `{revision['head']}`.\n",
         f"\n[Initial publication evidence]({evidence}).\n",
         "\nContinue from the checked-out pull request head. Address the selected feedback, preserve existing work, "
         "and keep the original issue requirements and approved paths. Reproduce the behavior described in the "
@@ -125,7 +126,9 @@ def render_revision(revision, checkpoint, repository):
             line = feedback.get("line")
             location = f" (`{path}:{line}`)" if line else f" (`{path}`)"
         excerpt = "\n".join(f"> {line}" for line in feedback["body"].splitlines())
-        sections.append(f"\n[Discussion]({feedback['url']}){location}\n\n{excerpt}\n")
+        label = "CI check" if feedback.get("kind") == "ci" else "Discussion"
+        reference = f"[{label}]({feedback['url']})" if feedback["url"] else label
+        sections.append(f"\n{reference}{location}\n\n{excerpt}\n")
     return "".join(sections)
 
 

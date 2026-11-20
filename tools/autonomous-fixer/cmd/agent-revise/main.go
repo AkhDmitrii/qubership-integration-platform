@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/agentpr"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/hostedcandidate"
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/hostedrevision"
@@ -90,7 +91,10 @@ func run(ctx context.Context, args []string) error {
 	if args[0] == "admit" {
 		admitted, err := c.OpenRevision(ctx)
 		if err != nil {
-			return err
+			if os.Getenv("GITHUB_EVENT_NAME") != "workflow_dispatch" || !automaticSkip(err) {
+				return err
+			}
+			fmt.Fprintln(os.Stderr, "Automatic revision skipped:", err)
 		}
 		return writeOutput(fmt.Sprintf("admitted=%t\n", admitted))
 	}
@@ -120,6 +124,12 @@ func run(ctx context.Context, args []string) error {
 	return writeOutput(fmt.Sprintf("base_sha=%s\nissue=%d\n", checkpoint.Contract.BaseSHA, checkpoint.IssueNumber))
 }
 
+func automaticSkip(err error) bool {
+	return errors.Is(err, hostedrevision.ErrUnauthorized) || errors.Is(err, hostedrevision.ErrAlreadyActive) ||
+		errors.Is(err, hostedrevision.ErrStale) || errors.Is(err, hostedrevision.ErrClosed) ||
+		errors.Is(err, agentpr.ErrNotPublished) || errors.Is(err, agentpr.ErrPublicationPending)
+}
+
 func publish(ctx context.Context, c *hostedrevision.Controller, a hostedrevision.Assignment) error {
 	done, err := c.HasResult(ctx, a)
 	if err != nil || done {
@@ -128,6 +138,9 @@ func publish(ctx context.Context, c *hostedrevision.Controller, a hostedrevision
 	report := func(result hostedrevision.Result) error { return c.Report(ctx, a, result) }
 	if os.Getenv("REVISION_WORK_RESULT") != "success" {
 		_, err := c.CheckHead(ctx, a, "")
+		if err == nil && a.Automatic {
+			_, err = c.Verify(ctx, a)
+		}
 		return finishRevision(hostedrevision.Result{Status: "failed"}, err, report)
 	}
 	dir := os.Getenv("AGENT_PILOT_ARTIFACT_DIR")

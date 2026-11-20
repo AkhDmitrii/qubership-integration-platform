@@ -37,6 +37,7 @@ func GitHubWriteRejected(err error) bool {
 
 type GitHubClient struct {
 	repository, token string
+	apiVersion        string
 	base              *url.URL
 	client            *http.Client
 }
@@ -89,7 +90,7 @@ func NewGitHubClient(repository, token string, httpClient *http.Client, baseURL 
 		}
 		return http.ErrUseLastResponse
 	}
-	return &GitHubClient{repository: repository, token: token, base: base, client: &client}, nil
+	return &GitHubClient{repository: repository, token: token, apiVersion: "2026-03-10", base: base, client: &client}, nil
 }
 func (c *GitHubClient) repoPath(path string) (string, error) {
 	if (path != "" && (!strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//"))) || strings.ContainsAny(path, "#\\") {
@@ -130,7 +131,7 @@ func (c *GitHubClient) send(ctx context.Context, method, path string, body, targ
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("X-GitHub-Api-Version", "2026-03-10")
+	req.Header.Set("X-GitHub-Api-Version", c.apiVersion)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -171,6 +172,17 @@ func (c *GitHubClient) Request(ctx context.Context, method, path string, body, t
 	_, e := c.request(ctx, method, path, body, target)
 	return e
 }
+
+func (c *GitHubClient) ReadPullRequestWithMerge(ctx context.Context, number int64, target any) error {
+	if number <= 0 {
+		return fmt.Errorf("invalid pull request number")
+	}
+	// GitHub removed merge_commit_sha from pull request responses in API version 2026-03-10.
+	legacy := *c
+	legacy.apiVersion = "2022-11-28"
+	return legacy.Request(ctx, http.MethodGet, fmt.Sprintf("/pulls/%d", number), nil, target)
+}
+
 func (c *GitHubClient) List(ctx context.Context, path, collectionKey string) ([]json.RawMessage, error) {
 	p, err := c.repoPath(path)
 	if err != nil {

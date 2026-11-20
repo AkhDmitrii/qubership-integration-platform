@@ -17,24 +17,30 @@ import (
 )
 
 type fixture struct {
-	mu           sync.Mutex
-	cfg          Config
-	pr           agentpr.PullRequest
-	issue        fixer.Issue
-	origin       string
-	bot          fixer.GitHubUser
-	state        fixer.Comment
-	permission   string
-	allowlist    string
-	comparison   string
-	publishedTip string
-	status       string
-	feedbackPull int64
-	reviewSize   int
-	feedbackBody string
-	commands     map[int64]fixer.Comment
-	comments     []fixer.Comment
-	writes       int
+	mu             sync.Mutex
+	cfg            Config
+	pr             agentpr.PullRequest
+	issue          fixer.Issue
+	origin         string
+	bot            fixer.GitHubUser
+	state          fixer.Comment
+	permission     string
+	allowlist      string
+	comparison     string
+	publishedTip   string
+	status         string
+	feedbackPull   int64
+	reviewSize     int
+	feedbackBody   string
+	commands       map[int64]fixer.Comment
+	comments       []fixer.Comment
+	writes         int
+	commandPull    int64
+	reviews        []discussion
+	reviewer       fixer.GitHubUser
+	runs           map[int64]fixer.WorkflowRun
+	ciConclusion   string
+	requiredChecks string
 }
 
 func revisionFixture(t *testing.T) *fixture {
@@ -82,6 +88,7 @@ func revisionFixture(t *testing.T) *fixture {
 		issue: issue, origin: origin, state: fixer.Comment{ID: 50, User: bot, Body: canonical}, bot: bot,
 		permission: "write", allowlist: user.Login, feedbackPull: 4, feedbackBody: "Handle focus after closing the dialog.",
 		comments: []fixer.Comment{}, comparison: "ahead", status: "in_progress", commands: map[int64]fixer.Comment{13: command},
+		commandPull: 4, runs: make(map[int64]fixer.WorkflowRun),
 	}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(server.Close)
@@ -124,8 +131,12 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 		send(map[string]string{"value": "pilot"})
 	case p == "/actions/variables/AGENT_ALLOWED_ACTORS":
 		send(map[string]string{"value": f.allowlist})
+	case p == "/actions/variables/AGENT_CI_REQUIRED_CHECKS" && f.requiredChecks != "":
+		send(map[string]string{"value": f.requiredChecks})
 	case p == "/collaborators/maintainer/permission":
 		send(map[string]any{"permission": f.permission, "user": f.cfg.Payload.Comment.User})
+	case p == "/collaborators/reviewer/permission":
+		send(map[string]any{"permission": f.permission, "user": f.reviewer})
 	case strings.HasPrefix(p, "/issues/comments/") && p != "/issues/comments/8":
 		var id int64
 		fmt.Sscanf(p, "/issues/comments/%d", &id)
@@ -137,25 +148,68 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 		send(struct {
 			fixer.Comment
 			URL string `json:"issue_url"`
-		}{cmd, "https://api.github.com/repos/org/repo/issues/4"})
+		}{cmd, fmt.Sprintf("https://api.github.com/repos/org/repo/issues/%d", f.commandPull)})
 	case p == "/issues/comments/8":
 		send(discussion{ID: 8, IssueURL: "https://api.github.com/repos/org/repo/issues/4", Body: "Cover the other layout."})
 	case p == "/pulls/comments/7":
-		send(discussion{ID: 7, PullAPIURL: fmt.Sprintf("https://api.github.com/repos/org/repo/pulls/%d", f.feedbackPull), Body: f.feedbackBody, Path: "ui/a.ts", Line: 22})
-	case p == "/pulls/4/reviews/11":
-		send(discussion{ID: 11})
-	case p == "/pulls/4/reviews/11/comments":
+		send(discussion{ID: 7, PullAPIURL: fmt.Sprintf("https://api.github.com/repos/org/repo/pulls/%d", f.feedbackPull), Body: f.feedbackBody, Path: "ui/a.ts", Line: 22, ReviewID: 11})
+	case p == "/pulls/4/reviews":
+		send(f.reviews)
+	case strings.HasPrefix(p, "/pulls/4/reviews/") && !strings.HasSuffix(p, "/comments"):
+		var id int64
+		fmt.Sscanf(p, "/pulls/4/reviews/%d", &id)
+		for _, review := range f.reviews {
+			if review.ID == id {
+				send(review)
+				return
+			}
+		}
+		send(discussion{ID: id})
+	case strings.HasPrefix(p, "/pulls/4/reviews/") && strings.HasSuffix(p, "/comments"):
+		var id int64
+		fmt.Sscanf(p, "/pulls/4/reviews/%d/comments", &id)
 		comments := make([]discussion, f.reviewSize)
 		for i := range comments {
-			comments[i] = discussion{ID: int64(i + 30), PullAPIURL: "https://api.github.com/repos/org/repo/pulls/4", Body: fmt.Sprintf("Review comment %d", i+1)}
+			comments[i] = discussion{ID: id*10 + int64(i), PullAPIURL: fmt.Sprintf("https://api.github.com/repos/org/repo/pulls/%d", f.feedbackPull),
+				Body: fmt.Sprintf("Review comment %d", i+1), User: f.reviewer, ReviewID: id, Path: "ui/a.ts", Line: 22}
 		}
 		send(comments)
 	case p == "/compare/"+f.origin+"..."+f.pr.Head.SHA || (f.publishedTip != "" && p == "/compare/"+f.publishedTip+"..."+f.pr.Head.SHA):
 		send(map[string]string{"status": f.comparison})
+	case p == "/actions/workflows/agent-work.yaml":
+		send(map[string]any{"id": 21, "path": ".github/workflows/agent-work.yaml"})
+	case strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/attempts/1") && len(f.runs) > 0:
+		var id int64
+		fmt.Sscanf(p, "/actions/runs/%d/attempts/1", &id)
+		if run, ok := f.runs[id]; ok {
+			send(run)
+			return
+		}
+		http.NotFound(w, r)
 	case p == "/actions/runs/123/attempts/1":
 		send(fixer.WorkflowRun{ID: 123, RunAttempt: 1, HeadRepository: f.cfg.Payload.Repository, Event: "issue_comment",
 			Path: ".github/workflows/agent-work.yaml", HeadBranch: "main", HeadSHA: f.cfg.WorkflowSHA,
 			DisplayTitle: "qip-agent-revise|4|13", Status: f.status})
+	case p == "/rules/branches/main":
+		send([]any{})
+	case p == "/branches/main":
+		send(map[string]any{})
+	case p == "/commits/"+f.pr.Head.SHA+"/check-runs":
+		send(map[string]any{"check_runs": []map[string]any{{
+			"id": 87, "name": "Compile", "head_sha": f.pr.Head.SHA, "status": "completed", "conclusion": f.ciConclusion,
+			"check_suite": map[string]any{"id": 77}, "app": map[string]any{"id": 1234, "slug": "github-actions"},
+		}}})
+	case p == "/commits/"+f.pr.Head.SHA+"/statuses":
+		send([]any{})
+	case p == "/actions/runs" && r.URL.Query().Get("head_sha") == f.pr.Head.SHA:
+		send(map[string]any{"workflow_runs": []map[string]any{{
+			"id": 767, "workflow_id": 83, "name": "UI build", "head_sha": f.pr.Head.SHA, "check_suite_id": 77,
+			"run_attempt": 1, "event": "pull_request", "status": "completed", "conclusion": f.ciConclusion,
+		}}})
+	case p == "/actions/jobs/87":
+		send(map[string]any{"id": 87, "run_id": 767, "head_sha": f.pr.Head.SHA, "status": "completed", "conclusion": f.ciConclusion})
+	case p == "/check-runs/87/annotations":
+		send([]map[string]string{{"annotation_level": "failure", "path": "ui/a.ts", "message": "ui/a.ts(20,30): error TS1234: invalid argument"}})
 	default:
 		http.NotFound(w, r)
 	}
@@ -338,7 +392,7 @@ func TestRevisionExpandsAnExplicitReviewWithAnEmptySummary(t *testing.T) {
 	}
 	f.change(func() { f.reviewSize = 2 })
 	got, err := loadFeedback(context.Background(), f.cfg.Client, "org/repo", 4, selected)
-	if err != nil || len(got) != 2 || got[0].URL != "https://github.com/org/repo/pull/4#discussion_r30" {
+	if err != nil || len(got) != 2 || got[0].URL != "https://github.com/org/repo/pull/4#discussion_r110" {
 		t.Fatalf("feedback = %#v, %v", got, err)
 	}
 	f.change(func() { f.reviewSize = maxFeedback + 1 })
@@ -355,5 +409,28 @@ func TestRevisionRequiresConcreteDistinctRefs(t *testing.T) {
 		if _, _, err := parseCommand(body, pullURL("org/repo", 4)); err == nil {
 			t.Errorf("accepted command %q", body)
 		}
+	}
+}
+
+func TestManualRevisionConsumesOnlyExplicitlySelectedWholeReviews(t *testing.T) {
+	for _, test := range []struct {
+		link string
+		want int
+	}{
+		{link: "#discussion_r7", want: 0},
+		{link: "#pullrequestreview-11", want: 1},
+	} {
+		t.Run(test.link, func(t *testing.T) {
+			f := revisionFixture(t)
+			f.change(func() {
+				f.cfg.Payload.Comment.Body = "/agent revise " + test.link
+				f.commands[13] = f.cfg.Payload.Comment
+				f.reviewSize = 1
+			})
+			a := accepted(t, openFixture(t, f.cfg))
+			if got := a.ConsumedReviews(); len(got) != test.want || (test.want == 1 && got[0] != 11) {
+				t.Fatalf("consumed reviews = %v", got)
+			}
+		})
 	}
 }

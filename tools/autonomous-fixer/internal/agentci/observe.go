@@ -80,6 +80,27 @@ func Observe(ctx context.Context, client *fixer.GitHubClient, options Options) (
 	return reports, errors.Join(failures...)
 }
 
+// A completed revision can leave feedback that arrived while its worker was busy.
+func completedRevision(repo fixer.Repository, event Event) int64 {
+	run := event.WorkflowRun
+	if event.Action != "completed" || run.Status != "completed" || run.ID <= 0 ||
+		!agentpr.SameRepository(run.HeadRepository, repo) || run.HeadBranch != repo.DefaultBranch ||
+		run.Path != ".github/workflows/agent-work.yaml" {
+		return 0
+	}
+	kind, rest, _ := strings.Cut(run.DisplayTitle, "|")
+	number, receipt, _ := strings.Cut(rest, "|")
+	if (kind != "qip-agent-revise" || run.Event != "issue_comment") &&
+		(kind != "qip-agent-auto-revise" || run.Event != "workflow_dispatch") {
+		return 0
+	}
+	pr, err := fixer.PositiveID(number)
+	if _, receiptErr := fixer.PositiveID(receipt); err != nil || receiptErr != nil {
+		return 0
+	}
+	return pr
+}
+
 func targets(ctx context.Context, client *fixer.GitHubClient, repo fixer.Repository, options Options) ([]int64, error) {
 	switch options.EventName {
 	case "workflow_dispatch":
@@ -96,6 +117,9 @@ func targets(ctx context.Context, client *fixer.GitHubClient, repo fixer.Reposit
 		}
 		return []int64{pr.Number}, nil
 	case "workflow_run":
+		if pr := completedRevision(repo, options.Event); pr > 0 {
+			return []int64{pr}, nil
+		}
 		run := options.Event.WorkflowRun
 		if options.Event.Action != "completed" || run.Status != "completed" || run.ID <= 0 ||
 			!agentpr.SameRepository(run.HeadRepository, repo) || !commitSHA.MatchString(run.HeadSHA) ||
@@ -175,7 +199,8 @@ func observePullRequest(ctx context.Context, client *fixer.GitHubClient, repo fi
 	if !ok {
 		return nil, fmt.Errorf("engineering publication has no worker execution")
 	}
-	if options.EventName == "workflow_run" {
+	ciCompletion := options.EventName == "workflow_run" && completedRevision(repo, options.Event) == 0
+	if ciCompletion {
 		run := options.Event.WorkflowRun
 		if run.HeadSHA != pr.Head.SHA && run.HeadSHA != pr.MergeSHA {
 			return nil, nil
@@ -189,7 +214,7 @@ func observePullRequest(ctx context.Context, client *fixer.GitHubClient, repo fi
 	if err != nil {
 		return nil, err
 	}
-	if options.EventName == "workflow_run" && options.Event.WorkflowRun.HeadSHA != pr.Head.SHA && snapshot.TestMergeSHA == "" {
+	if ciCompletion && options.Event.WorkflowRun.HeadSHA != pr.Head.SHA && snapshot.TestMergeSHA == "" {
 		return nil, nil
 	}
 	snapshot.Diagnostics = append(snapshot.Diagnostics, diagnostics...)

@@ -42,7 +42,7 @@ func Read(ctx context.Context, client *fixer.GitHubClient, repository fixer.Repo
 	if number <= 0 || repository.ID <= 0 || repository.FullName == "" {
 		return pr, nil, fmt.Errorf("invalid pull request identity")
 	}
-	if err := client.Request(ctx, "GET", fmt.Sprintf("/pulls/%d", number), nil, &pr); err != nil {
+	if err := client.ReadPullRequestWithMerge(ctx, number, &pr); err != nil {
 		var response *fixer.HTTPError
 		if errors.As(err, &response) && response.Status == http.StatusNotFound {
 			return pr, nil, ErrNotPublished

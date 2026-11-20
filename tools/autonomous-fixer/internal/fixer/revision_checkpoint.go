@@ -2,11 +2,14 @@ package fixer
 
 import "fmt"
 
+func RevisionEligible(state *State, issue Issue) bool {
+	return state != nil && state.PilotPublication != nil && state.PilotCandidate != nil &&
+		state.Desired == "running" && state.Phase == "waiting-ci" && issue.Number == state.IssueNumber &&
+		issue.State == "open" && issue.ReadyForAgent() && state.Contract.matchesRequirements(issue.Requirements())
+}
+
 func RevisionCheckpoint(state *State, issue Issue, head string, run RunIdentity, command int64, assignmentSHA string) (Checkpoint, error) {
-	if state == nil || state.PilotPublication == nil || state.PilotCandidate == nil ||
-		state.Desired != "running" || state.Phase != "waiting-ci" ||
-		issue.Number != state.IssueNumber || issue.State != "open" || !issue.ReadyForAgent() ||
-		!state.Contract.matchesRequirements(issue.Requirements()) {
+	if !RevisionEligible(state, issue) {
 		return Checkpoint{}, fmt.Errorf("the original engineering assignment no longer authorizes work")
 	}
 	if !commitPattern.MatchString(head) || !digestPattern.MatchString(assignmentSHA) || run.RunID <= 0 || run.RunAttempt != 1 || command <= 0 {

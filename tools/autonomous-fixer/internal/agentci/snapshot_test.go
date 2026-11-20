@@ -55,6 +55,7 @@ func TestSnapshotReadsExactHeadAndChecksAllReportedCategories(t *testing.T) {
 				rawCheck("manual build", testHead, "completed", "success", "github-actions", 15368, 3),
 				rawCheck("observe", testHead, "in_progress", "", "github-actions", 15368, 4),
 				rawCheck("measure outcome", testHead, "in_progress", "", "github-actions", 15368, 5),
+				rawCheck("notify CI observer", testHead, "in_progress", "", "github-actions", 15368, 6),
 				rawCheck("format", testHead, "completed", "skipped", "github-actions", 15368, 1),
 			}})
 		case "/repos/org/repo/actions/runs":
@@ -64,6 +65,7 @@ func TestSnapshotReadsExactHeadAndChecksAllReportedCategories(t *testing.T) {
 				{Name: "Manual", SHA: testHead, Event: "workflow_dispatch", Suite: 3},
 				{Name: ObserverWorkflow, SHA: testHead, Event: "pull_request_target", Suite: 4},
 				{Name: "QIP agent PR outcome", SHA: testHead, Event: "pull_request_target", Suite: 5},
+				{Name: "QIP agent review submitted", SHA: testHead, Event: "pull_request_review", Suite: 6},
 			}})
 		case "/repos/org/repo/commits/" + testHead + "/statuses":
 			fixture(w, []map[string]string{{"context": "analysis", "state": "pending"}, {"context": "analysis", "state": "success"}})

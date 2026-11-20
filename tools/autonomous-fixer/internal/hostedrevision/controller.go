@@ -28,9 +28,12 @@ type Config struct {
 }
 
 type Controller struct {
-	cfg  Config
-	repo fixer.Repository
-	bot  fixer.GitHubUser
+	cfg        Config
+	repo       fixer.Repository
+	bot        fixer.GitHubUser
+	pullNumber int64
+	commentID  int64
+	automatic  bool
 }
 
 type Assignment struct {
@@ -49,19 +52,38 @@ type Assignment struct {
 	OriginRun     fixer.RunIdentity `json:"originRun"`
 	Feedback      []Feedback        `json:"feedback"`
 	Instruction   string            `json:"instruction,omitempty"`
+	Automatic     bool              `json:"automatic,omitempty"`
+	ReviewIDs     []int64           `json:"reviewIds,omitempty"`
+	FailureKeys   []string          `json:"failureKeys,omitempty"`
 	checkpointSHA string
 }
 
 func Open(ctx context.Context, cfg Config) (*Controller, error) {
 	p := cfg.Payload
-	if cfg.Client == nil || cfg.Variables == nil || cfg.Event != "issue_comment" || p.Action != "created" ||
-		p.Repository.ID <= 0 || p.Repository.FullName != cfg.Repository || cfg.Run.RunID <= 0 ||
-		cfg.Run.RunAttempt < 1 || p.Issue.Number <= 0 || len(p.Issue.PullRequest) == 0 || string(p.Issue.PullRequest) == "null" ||
-		p.Comment.ID <= 0 || p.Comment.User.ID <= 0 || p.Comment.User.Type != "User" || p.Comment.User != p.Sender ||
-		!strings.EqualFold(p.Comment.User.Login, cfg.Actor) || !strings.EqualFold(p.Comment.User.Login, cfg.TriggerActor) {
+	if cfg.Client == nil || cfg.Variables == nil || p.Repository.ID <= 0 || p.Repository.FullName != cfg.Repository ||
+		cfg.Run.RunID <= 0 || cfg.Run.RunAttempt < 1 || !commitSHA.MatchString(cfg.WorkflowSHA) {
 		return nil, ErrUnauthorized
 	}
 	c := &Controller{cfg: cfg}
+	switch cfg.Event {
+	case "issue_comment":
+		if p.Action != "created" || p.Issue.Number <= 0 || len(p.Issue.PullRequest) == 0 || string(p.Issue.PullRequest) == "null" ||
+			p.Comment.ID <= 0 || p.Comment.User.ID <= 0 || p.Comment.User.Type != "User" || p.Comment.User != p.Sender ||
+			!strings.EqualFold(p.Comment.User.Login, cfg.Actor) || !strings.EqualFold(p.Comment.User.Login, cfg.TriggerActor) {
+			return nil, ErrUnauthorized
+		}
+		c.pullNumber, c.commentID = p.Issue.Number, p.Comment.ID
+	case "workflow_dispatch":
+		pull, pullErr := fixer.PositiveID(p.Inputs["auto_pr"])
+		comment, commentErr := fixer.PositiveID(p.Inputs["auto_request"])
+		if pullErr != nil || commentErr != nil || cfg.Actor != "github-actions[bot]" ||
+			(cfg.Run.RunAttempt == 1 && cfg.TriggerActor != cfg.Actor) {
+			return nil, ErrUnauthorized
+		}
+		c.pullNumber, c.commentID, c.automatic = pull, comment, true
+	default:
+		return nil, ErrUnauthorized
+	}
 	if err := cfg.Client.Request(ctx, "GET", "", nil, &c.repo); err != nil {
 		return nil, err
 	}
@@ -72,6 +94,18 @@ func Open(ctx context.Context, cfg Config) (*Controller, error) {
 	c.bot, err = agentpr.Bot(ctx, cfg.Client)
 	if err != nil {
 		return nil, err
+	}
+	if c.automatic && p.Sender != c.bot {
+		return nil, ErrUnauthorized
+	}
+	if c.automatic && cfg.Run.RunAttempt > 1 && cfg.TriggerActor != c.bot.Login {
+		allowed, err := c.allowedActors(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !fixer.Allowed(allowed, cfg.TriggerActor) {
+			return nil, ErrUnauthorized
+		}
 	}
 	return c, nil
 }
@@ -84,76 +118,79 @@ func evidenceURL(repo string, run fixer.RunIdentity) string {
 	return fmt.Sprintf("https://github.com/%s/actions/runs/%d/attempts/%d", repo, run.RunID, run.RunAttempt)
 }
 
-func (c *Controller) commandCurrent(ctx context.Context) error {
-	payload := c.cfg.Payload.Comment
+func (c *Controller) commandCurrent(ctx context.Context) (fixer.Comment, error) {
 	var response struct {
 		fixer.Comment
 		IssueURL string `json:"issue_url"`
 	}
-	if err := c.cfg.Client.Request(ctx, "GET", fmt.Sprintf("/issues/comments/%d", payload.ID), nil, &response); err != nil {
-		var httpErr *fixer.HTTPError
-		if errors.As(err, &httpErr) && httpErr.Status == 404 {
-			return ErrUnauthorized
+	if err := c.cfg.Client.Request(ctx, "GET", fmt.Sprintf("/issues/comments/%d", c.commentID), nil, &response); err != nil {
+		if notFound(err) {
+			return fixer.Comment{}, ErrUnauthorized
 		}
-		return err
+		return fixer.Comment{}, err
 	}
-	if response.Comment != payload || payload.CreatedAt == "" || payload.CreatedAt != payload.UpdatedAt ||
-		response.IssueURL != fmt.Sprintf("https://api.github.com/repos/%s/issues/%d", c.repo.FullName, c.cfg.Payload.Issue.Number) {
-		return ErrUnauthorized
+	comment := response.Comment
+	if comment.ID != c.commentID || comment.CreatedAt == "" || comment.CreatedAt != comment.UpdatedAt ||
+		response.IssueURL != fmt.Sprintf("https://api.github.com/repos/%s/issues/%d", c.repo.FullName, c.pullNumber) ||
+		(c.automatic && comment.User != c.bot) || (!c.automatic && comment != c.cfg.Payload.Comment) {
+		return fixer.Comment{}, ErrUnauthorized
 	}
-	if _, err := time.Parse(time.RFC3339, payload.CreatedAt); err != nil {
-		return ErrUnauthorized
+	if _, err := time.Parse(time.RFC3339, comment.CreatedAt); err != nil {
+		return fixer.Comment{}, ErrUnauthorized
 	}
-	return nil
+	return comment, nil
 }
 
-func (c *Controller) operatorCurrent(ctx context.Context) error {
-	for name, want := range map[string]string{"AGENT_ENABLED": "true", "AGENT_MODE": "pilot"} {
-		value, err := c.cfg.Variables.RepositoryVariable(ctx, name)
+func (c *Controller) allowedActors(ctx context.Context) (string, error) {
+	for _, pair := range [][2]string{{"AGENT_ENABLED", "true"}, {"AGENT_MODE", "pilot"}} {
+		value, err := c.cfg.Variables.RepositoryVariable(ctx, pair[0])
 		if err != nil {
-			return err
+			return "", err
 		}
-		if value != want {
-			return ErrUnauthorized
+		if value != pair[1] {
+			return "", ErrUnauthorized
 		}
 	}
-	actors, err := c.cfg.Variables.RepositoryVariable(ctx, "AGENT_ALLOWED_ACTORS")
+	return c.cfg.Variables.RepositoryVariable(ctx, "AGENT_ALLOWED_ACTORS")
+}
+
+func (c *Controller) operatorCurrent(ctx context.Context, actors string, actor fixer.GitHubUser) error {
+	allowed, err := ReviewerAllowed(ctx, c.cfg.Client, actors, actor)
 	if err != nil {
 		return err
 	}
-	actor := c.cfg.Payload.Comment.User
-	if !fixer.Allowed(actors, actor.Login) {
-		return ErrUnauthorized
-	}
-	var permission struct {
-		Permission string           `json:"permission"`
-		User       fixer.GitHubUser `json:"user"`
-	}
-	if err := c.cfg.Client.Request(ctx, "GET", "/collaborators/"+url.PathEscape(actor.Login)+"/permission", nil, &permission); err != nil {
-		var response *fixer.HTTPError
-		if errors.As(err, &response) && response.Status == 404 {
-			return ErrUnauthorized
-		}
-		return err
-	}
-	if permission.User != actor || (permission.Permission != "admin" && permission.Permission != "write") {
+	if !allowed {
 		return ErrUnauthorized
 	}
 	return nil
 }
 
-func (c *Controller) jobCurrent(ctx context.Context, run fixer.RunIdentity, pull, comment int64, trustedSHA string) (bool, error) {
+func (c *Controller) jobCurrent(ctx context.Context, a Assignment) (bool, error) {
 	var actual fixer.WorkflowRun
-	path := fmt.Sprintf("/actions/runs/%d/attempts/%d", run.RunID, run.RunAttempt)
+	path := fmt.Sprintf("/actions/runs/%d/attempts/%d", a.Run.RunID, a.Run.RunAttempt)
 	if err := c.cfg.Client.Request(ctx, "GET", path, nil, &actual); err != nil {
 		return false, err
 	}
 	workflow := ".github/workflows/agent-work.yaml"
 	branch := c.repo.DefaultBranch
 	validPath := actual.Path == workflow || actual.Path == workflow+"@"+branch || actual.Path == workflow+"@refs/heads/"+branch
-	if actual.ID != run.RunID || actual.RunAttempt != run.RunAttempt || !agentpr.SameRepository(actual.HeadRepository, c.repo) ||
-		actual.Event != "issue_comment" || !validPath || actual.HeadBranch != branch || actual.HeadSHA != trustedSHA ||
-		actual.DisplayTitle != fmt.Sprintf("qip-agent-revise|%d|%d", pull, comment) {
+	event, prefix := "issue_comment", "qip-agent-revise"
+	if a.Automatic {
+		event, prefix = "workflow_dispatch", "qip-agent-auto-revise"
+		var expected struct {
+			ID   int64  `json:"id"`
+			Path string `json:"path"`
+		}
+		if err := c.cfg.Client.Request(ctx, "GET", "/actions/workflows/agent-work.yaml", nil, &expected); err != nil {
+			return false, err
+		}
+		if expected.ID <= 0 || expected.Path != workflow || actual.WorkflowID != expected.ID {
+			return false, ErrUnauthorized
+		}
+	}
+	if actual.ID != a.Run.RunID || actual.RunAttempt != a.Run.RunAttempt || !agentpr.SameRepository(actual.HeadRepository, c.repo) ||
+		actual.Event != event || !validPath || actual.HeadBranch != branch || actual.HeadSHA != a.WorkflowSHA ||
+		actual.DisplayTitle != fmt.Sprintf("%s|%d|%d", prefix, a.PullNumber, a.CommentID) {
 		return false, fmt.Errorf("the revision workflow differs from the recorded run")
 	}
 	return actual.Status != "completed", nil
@@ -161,7 +198,7 @@ func (c *Controller) jobCurrent(ctx context.Context, run fixer.RunIdentity, pull
 
 func (c *Controller) pull(ctx context.Context) (agentpr.PullRequest, error) {
 	var pr agentpr.PullRequest
-	err := c.cfg.Client.Request(ctx, "GET", fmt.Sprintf("/pulls/%d", c.cfg.Payload.Issue.Number), nil, &pr)
+	err := c.cfg.Client.ReadPullRequestWithMerge(ctx, c.pullNumber, &pr)
 	return pr, err
 }
 
@@ -216,42 +253,59 @@ func isHeadChange(err error) bool {
 }
 
 func (c *Controller) OpenRevision(ctx context.Context) (bool, error) {
-	p := c.cfg.Payload
 	if c.cfg.Run.RunAttempt != 1 {
 		return false, nil
 	}
-	seen, err := c.receipts(ctx)
+	comments, err := c.botComments(ctx)
 	if err != nil {
 		return false, err
 	}
-	if _, exists := seen[p.Comment.ID]; exists {
+	seen, err := Assignments(comments, c.bot, c.repo.ID, c.pullNumber)
+	if err != nil {
+		return false, err
+	}
+	if _, exists := seen[c.commentID]; exists {
 		return false, nil
 	}
-	if err := c.operatorCurrent(ctx); err != nil {
-		return false, err
-	}
-	if err := c.commandCurrent(ctx); err != nil {
-		return false, err
-	}
-	selected, instruction, err := parseCommand(p.Comment.Body, pullURL(c.repo.FullName, p.Issue.Number))
+	actors, err := c.allowedActors(ctx)
 	if err != nil {
 		return false, err
 	}
-	pr, state, err := agentpr.Read(ctx, c.cfg.Client, c.repo, p.Issue.Number)
+	if !c.automatic {
+		if err := c.operatorCurrent(ctx, actors, c.cfg.Payload.Comment.User); err != nil {
+			return false, err
+		}
+	}
+	command, err := c.commandCurrent(ctx)
+	if err != nil {
+		return false, err
+	}
+	var selected []selection
+	var instruction string
+	if !c.automatic {
+		selected, instruction, err = parseCommand(command.Body, pullURL(c.repo.FullName, c.pullNumber))
+		if err != nil {
+			return false, err
+		}
+	}
+	pr, state, err := agentpr.Read(ctx, c.cfg.Client, c.repo, c.pullNumber)
 	if err != nil {
 		return false, err
 	}
 	if pr.State != "open" || pr.Merged {
 		return false, ErrClosed
 	}
-	if state.PilotCandidate == nil {
+	if state.PilotCandidate == nil || (c.automatic && !fixer.Allowed(actors, state.Initiator)) {
 		return false, ErrUnauthorized
 	}
 	if pr.Base.Ref != c.repo.DefaultBranch {
 		return false, ErrStale
 	}
 	for _, existing := range seen {
-		active, err := c.jobCurrent(ctx, existing.Run, existing.PullNumber, existing.CommentID, existing.WorkflowSHA)
+		if RevisionResultRecorded(comments, c.bot, existing) {
+			continue
+		}
+		active, err := c.jobCurrent(ctx, existing)
 		if err != nil {
 			return false, err
 		}
@@ -271,15 +325,27 @@ func (c *Controller) OpenRevision(ctx context.Context) (bool, error) {
 			return false, ErrStale
 		}
 	}
-	feedback, err := loadFeedback(ctx, c.cfg.Client, c.repo.FullName, pr.Number, selected)
-	if err != nil {
-		return false, err
-	}
 	a := Assignment{
 		RepositoryID: c.repo.ID, PullID: pr.ID, PullNumber: pr.Number, Issue: state.IssueNumber,
-		Branch: pr.Head.Ref, Head: pr.Head.SHA, CommentID: p.Comment.ID, Actor: p.Comment.User, CreatedAt: p.Comment.CreatedAt,
-		CommandHash: fmt.Sprintf("%x", sha256.Sum256([]byte(p.Comment.Body))), WorkflowSHA: c.cfg.WorkflowSHA,
-		Run: c.cfg.Run, OriginRun: state.PilotCandidate.Run, Feedback: feedback, Instruction: instruction,
+		Branch: pr.Head.Ref, Head: pr.Head.SHA, CommentID: command.ID, Actor: command.User, CreatedAt: command.CreatedAt,
+		CommandHash: commandDigest(command), WorkflowSHA: c.cfg.WorkflowSHA, Automatic: c.automatic,
+		Run: c.cfg.Run, OriginRun: state.PilotCandidate.Run,
+	}
+	if c.automatic {
+		if err := c.prepareAutomatic(ctx, actors, pr, command, seen, &a); err != nil {
+			return false, err
+		}
+	} else {
+		a.Instruction = instruction
+		a.Feedback, err = loadFeedback(ctx, c.cfg.Client, c.repo.FullName, pr.Number, selected)
+		if err != nil {
+			return false, err
+		}
+		for _, item := range selected {
+			if item.kind == "pullrequestreview-" {
+				a.ReviewIDs = append(a.ReviewIDs, item.id)
+			}
+		}
 	}
 	checkpoint, err := c.checkpoint(ctx, state, a)
 	if err != nil {
@@ -289,8 +355,12 @@ func (c *Controller) OpenRevision(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if _, err := c.jobCurrent(ctx, a.Run, a.PullNumber, a.CommentID, a.WorkflowSHA); err != nil {
+	active, err := c.jobCurrent(ctx, a)
+	if err != nil {
 		return false, err
+	}
+	if !active {
+		return false, ErrUnauthorized
 	}
 	if _, err := c.CheckHead(ctx, a, ""); err != nil {
 		return false, err
@@ -317,32 +387,54 @@ func (c *Controller) checkpoint(ctx context.Context, state *fixer.State, a Assig
 	return checkpoint, nil
 }
 
+func commandDigest(command fixer.Comment) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(command.Body)))
+}
+
 func (c *Controller) Assignment(ctx context.Context) (Assignment, bool, error) {
 	receipts, err := c.receipts(ctx)
 	if err != nil {
 		return Assignment{}, false, err
 	}
-	p := c.cfg.Payload
-	a, ok := receipts[p.Comment.ID]
+	a, ok := receipts[c.commentID]
 	if !ok || a.Run.RunID != c.cfg.Run.RunID {
 		return Assignment{}, false, nil
 	}
-	if a.Actor != p.Comment.User || a.CreatedAt != p.Comment.CreatedAt || a.WorkflowSHA != c.cfg.WorkflowSHA ||
-		a.CommandHash != fmt.Sprintf("%x", sha256.Sum256([]byte(p.Comment.Body))) {
+	if a.Automatic != c.automatic || a.WorkflowSHA != c.cfg.WorkflowSHA ||
+		(c.automatic && a.Actor != c.bot) ||
+		(!c.automatic && !a.matchesCommand(c.cfg.Payload.Comment)) {
 		return Assignment{}, false, ErrUnauthorized
 	}
 	return a, true, nil
 }
 
+func (a Assignment) matchesCommand(command fixer.Comment) bool {
+	return a.Actor == command.User && a.CreatedAt == command.CreatedAt && a.CommandHash == commandDigest(command)
+}
+
 func (c *Controller) Verify(ctx context.Context, a Assignment) (fixer.Checkpoint, error) {
-	if err := c.operatorCurrent(ctx); err != nil {
+	if a.RepositoryID != c.repo.ID || a.PullNumber != c.pullNumber || a.CommentID != c.commentID ||
+		a.Run.RunID != c.cfg.Run.RunID || a.WorkflowSHA != c.cfg.WorkflowSHA || a.Automatic != c.automatic {
+		return fixer.Checkpoint{}, ErrUnauthorized
+	}
+	actors, err := c.allowedActors(ctx)
+	if err != nil {
 		return fixer.Checkpoint{}, err
 	}
-	if err := c.commandCurrent(ctx); err != nil {
+	if !c.automatic {
+		if err := c.operatorCurrent(ctx, actors, c.cfg.Payload.Comment.User); err != nil {
+			return fixer.Checkpoint{}, err
+		}
+	}
+	command, err := c.commandCurrent(ctx)
+	if err != nil {
 		return fixer.Checkpoint{}, err
 	}
-	_, state, err := agentpr.Read(ctx, c.cfg.Client, c.repo, a.PullNumber)
-	if errors.Is(err, agentpr.ErrNotPublished) {
+	if !a.matchesCommand(command) {
+		return fixer.Checkpoint{}, ErrUnauthorized
+	}
+	pr, state, err := agentpr.Read(ctx, c.cfg.Client, c.repo, a.PullNumber)
+	if errors.Is(err, agentpr.ErrNotPublished) || errors.Is(err, agentpr.ErrPublicationPending) {
 		return fixer.Checkpoint{}, ErrUnauthorized
 	}
 	if err != nil {
@@ -354,6 +446,20 @@ func (c *Controller) Verify(ctx context.Context, a Assignment) (fixer.Checkpoint
 	}
 	if !a.MatchesCheckpoint(checkpoint) {
 		return fixer.Checkpoint{}, ErrUnauthorized
+	}
+	if c.automatic {
+		if !fixer.Allowed(actors, state.Initiator) {
+			return fixer.Checkpoint{}, ErrUnauthorized
+		}
+		if _, err := c.jobCurrent(ctx, a); err != nil {
+			return fixer.Checkpoint{}, err
+		}
+		if _, err := c.completedHead(pr, a, ""); err != nil {
+			return fixer.Checkpoint{}, err
+		}
+		if err := c.verifyAutomatic(ctx, actors, pr, command, a); err != nil {
+			return fixer.Checkpoint{}, err
+		}
 	}
 	return checkpoint, nil
 }

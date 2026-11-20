@@ -88,11 +88,11 @@ func TestRevisionPreparationUsesTheTrustedMavenCacheWithoutCredentials(t *testin
 	_, prepare, _ := strings.Cut(work, "- name: Prepare the product environment")
 	initial, revision, _ := strings.Cut(prepare, "- name: Prepare the revision environment")
 	revision, _, _ = strings.Cut(revision, "- name: Run the author and reviewer")
-	if !strings.Contains(initial, "github.event_name == 'workflow_dispatch' && inputs.mode == 'pilot'") ||
+	if !strings.Contains(initial, "needs.admit.outputs.admitted == 'true' && inputs.mode == 'pilot'") ||
 		!strings.Contains(initial, "MAVEN_GITHUB_PASSWORD:") {
 		t.Fatal("initial pilot preparation needs its Maven authentication")
 	}
-	if !strings.Contains(revision, "github.event_name == 'issue_comment'") || !strings.Contains(revision, "hosted_prepare_revision.sh") ||
+	if !strings.Contains(revision, "needs.admit-revision.outputs.admitted == 'true'") || !strings.Contains(revision, "hosted_prepare_revision.sh") ||
 		strings.Contains(revision, "env:") || strings.Contains(revision, "github.token") || strings.Contains(revision, "secrets.") {
 		t.Fatal("revision preparation must run in its own step without credentials")
 	}
@@ -113,5 +113,29 @@ func TestRevisionPreparationUsesTheTrustedMavenCacheWithoutCredentials(t *testin
 		if !strings.Contains(prewarm, required) {
 			t.Errorf("the trusted prewarm needs %q", required)
 		}
+	}
+}
+
+func TestAutomaticRevisionUsesTheExistingRevisionWorkflow(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "..", ".github", "workflows", "agent-work.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(source)
+	for _, required := range []string{
+		"format('qip-agent-auto-revise|{0}|{1}', inputs.auto_pr, inputs.auto_request)",
+		"inputs.auto_pr == '' && inputs.auto_request == ''",
+		"inputs.auto_pr != '' && inputs.auto_request != ''",
+		"github.event.sender.login == 'github-actions[bot]'",
+		"github.event.sender.type == 'Bot'",
+		"needs.admit-revision.outputs.admitted == 'true' && github.run_attempt == 1",
+		"if: needs.admit-revision.outputs.admitted == 'true'\n        run: '\"$RUNNER_TEMP/qip-agent-revise\" work'",
+	} {
+		if !strings.Contains(workflow, required) {
+			t.Errorf("missing %q", required)
+		}
+	}
+	if strings.Count(workflow, "group: qip-agent-revision-${{ github.event.issue.number || inputs.auto_pr }}") != 2 {
+		t.Fatal("both revision admission and publication must share the pull request's concurrency group")
 	}
 }

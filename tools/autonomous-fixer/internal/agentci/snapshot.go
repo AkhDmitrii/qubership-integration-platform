@@ -29,6 +29,8 @@ type Check struct {
 	Conclusion string `json:"conclusion,omitempty"`
 	Required   bool   `json:"required,omitempty"`
 	URL        string `json:"url,omitempty"`
+	ID         int64  `json:"id,omitempty"`
+	action     actionRun
 }
 
 const ObserverWorkflow = "QIP agent CI observation"
@@ -98,10 +100,24 @@ func verifyTestMerge(ctx context.Context, client *fixer.GitHubClient, headSHA, m
 }
 
 type actionRun struct {
-	Name  string `json:"name"`
-	SHA   string `json:"head_sha"`
-	Event string `json:"event"`
-	Suite int64  `json:"check_suite_id"`
+	Name       string `json:"name"`
+	SHA        string `json:"head_sha"`
+	Event      string `json:"event"`
+	Suite      int64  `json:"check_suite_id"`
+	ID         int64  `json:"id"`
+	WorkflowID int64  `json:"workflow_id"`
+	Attempt    int    `json:"run_attempt"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+func observationWorkflow(name string) bool {
+	switch name {
+	case ObserverWorkflow, "QIP agent PR outcome", "QIP agent review submitted":
+		return true
+	default:
+		return false
+	}
 }
 
 func actionRuns(ctx context.Context, client *fixer.GitHubClient, sha string) (map[int64]actionRun, error) {
@@ -155,6 +171,7 @@ func readCheckRuns(ctx context.Context, client *fixer.GitHubClient, sha string) 
 	unmatched := false
 	for _, item := range items {
 		var run struct {
+			ID         int64  `json:"id"`
 			Name       string `json:"name"`
 			SHA        string `json:"head_sha"`
 			Status     string `json:"status"`
@@ -171,23 +188,24 @@ func readCheckRuns(ctx context.Context, client *fixer.GitHubClient, sha string) 
 		if json.Unmarshal(item, &run) != nil || run.SHA != sha || run.Name == "" || run.Status == "" {
 			return checks, fmt.Errorf("check run does not identify the requested commit")
 		}
-		workflow := ""
+		var action actionRun
 		if run.App.Slug == "github-actions" {
 			if runs == nil && runsErr == nil {
 				runs, runsErr = actionRuns(ctx, client, sha)
 			}
-			action, found := runs[run.Suite.ID]
+			var found bool
+			action, found = runs[run.Suite.ID]
 			if !found {
 				unmatched = true
 				continue
 			}
-			if !eligibleActionEvent(action.Event) || action.Name == ObserverWorkflow || action.Name == "QIP agent PR outcome" {
+			if !eligibleActionEvent(action.Event) || observationWorkflow(action.Name) {
 				continue
 			}
-			workflow = action.Name
 		}
-		checks = append(checks, Check{Name: run.Name, Kind: "check-run", SHA: sha, Workflow: workflow,
-			AppID: run.App.ID, Status: checkStatus(run.Status, run.Conclusion), Conclusion: run.Conclusion, URL: run.URL})
+		checks = append(checks, Check{Name: run.Name, Kind: "check-run", SHA: sha, Workflow: action.Name,
+			AppID: run.App.ID, Status: checkStatus(run.Status, run.Conclusion), Conclusion: run.Conclusion, URL: run.URL,
+			ID: run.ID, action: action})
 	}
 	if runsErr == nil && unmatched {
 		runsErr = fmt.Errorf("some GitHub Actions checks could not be matched to a workflow run")

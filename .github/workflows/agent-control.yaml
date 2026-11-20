@@ -90,7 +90,9 @@ jobs:
       ${{ vars.AGENT_ENABLED == 'true' && github.event_name != 'pull_request' &&
           inputs.operation != 'check' &&
           (github.event_name != 'issue_comment' || !github.event.issue.pull_request) &&
-          (github.event_name != 'workflow_run' || github.event.workflow_run.event == 'workflow_dispatch') &&
+          (github.event_name != 'workflow_run' ||
+            (github.event.workflow_run.event == 'workflow_dispatch' &&
+             !startsWith(github.event.workflow_run.display_title, 'qip-agent-auto-revise|'))) &&
           github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15

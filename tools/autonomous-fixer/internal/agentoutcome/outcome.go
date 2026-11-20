@@ -139,7 +139,7 @@ func ReadAndRecord(ctx context.Context, client *fixer.GitHubClient, config Confi
 	report.HumanInvolvement = readProvenance(ctx, client, pr, comments, bot, git, *report)
 
 	var current agentpr.PullRequest
-	if err := client.Request(ctx, "GET", fmt.Sprintf("/pulls/%d", pr.Number), nil, &current); err != nil {
+	if err := client.ReadPullRequestWithMerge(ctx, pr.Number, &current); err != nil {
 		return report, err
 	}
 	if !matchesClosure(current, hook) {

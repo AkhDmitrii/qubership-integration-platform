@@ -2,9 +2,12 @@ package hostedrevision
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/Netcracker/qubership-integration-platform/tools/autonomous-fixer/internal/fixer"
 )
@@ -18,6 +21,8 @@ var feedbackAnchor = regexp.MustCompile(`^#(discussion_r|pullrequestreview-|issu
 type selection struct {
 	anchor, kind string
 	id           int64
+	actor        fixer.GitHubUser
+	head         string
 }
 
 type Feedback struct {
@@ -25,6 +30,7 @@ type Feedback struct {
 	Body string `json:"body"`
 	Path string `json:"path,omitempty"`
 	Line int    `json:"line,omitempty"`
+	Kind string `json:"kind,omitempty"`
 }
 
 func parseCommand(body, pullURL string) ([]selection, string, error) {
@@ -53,29 +59,43 @@ func parseCommand(body, pullURL string) ([]selection, string, error) {
 }
 
 type discussion struct {
-	ID         int64  `json:"id"`
-	Body       string `json:"body"`
-	PullAPIURL string `json:"pull_request_url"`
-	IssueURL   string `json:"issue_url"`
-	Path       string `json:"path"`
-	Line       int    `json:"line"`
+	ID          int64            `json:"id"`
+	Body        string           `json:"body"`
+	PullAPIURL  string           `json:"pull_request_url"`
+	IssueURL    string           `json:"issue_url"`
+	Path        string           `json:"path"`
+	Line        int              `json:"line"`
+	User        fixer.GitHubUser `json:"user"`
+	ReviewID    int64            `json:"pull_request_review_id"`
+	CommitID    string           `json:"commit_id"`
+	State       string           `json:"state"`
+	SubmittedAt time.Time        `json:"submitted_at"`
 }
 
 func loadFeedback(ctx context.Context, client *fixer.GitHubClient, repository string, pull int64, selections []selection) ([]Feedback, error) {
 	var feedback []Feedback
 	seen := map[string]bool{}
-	appendComment := func(anchor string, comment discussion) error {
+	appendComment := func(anchor string, comment discussion, automatic bool) error {
 		if seen[anchor] {
 			return nil
 		}
-		if len(feedback) >= maxFeedback {
+		if !automatic && len(feedback) >= maxFeedback {
 			return fmt.Errorf("select at most five review messages, including comments from a linked review")
 		}
-		if strings.TrimSpace(comment.Body) == "" || len(comment.Body) > maxFeedbackBytes {
+		if automatic && len(comment.Body) > maxFeedbackBytes {
+			body := comment.Body[:maxFeedbackBytes]
+			for !utf8.ValidString(body) {
+				body = body[:len(body)-1]
+			}
+			comment.Body = body + "\n\n[Excerpt truncated]"
+		}
+		if strings.TrimSpace(comment.Body) == "" || (!automatic && len(comment.Body) > maxFeedbackBytes) {
 			return fmt.Errorf("each selected discussion needs a body of at most 4096 bytes")
 		}
 		seen[anchor] = true
-		feedback = append(feedback, Feedback{URL: pullURL(repository, pull) + anchor, Body: comment.Body, Path: comment.Path, Line: comment.Line})
+		feedback = append(feedback, Feedback{
+			URL: pullURL(repository, pull) + anchor, Body: comment.Body, Path: comment.Path, Line: comment.Line,
+		})
 		return nil
 	}
 	api := "https://api.github.com/repos/" + repository
@@ -88,11 +108,30 @@ func loadFeedback(ctx context.Context, client *fixer.GitHubClient, repository st
 			if err := client.Request(ctx, "GET", review, nil, &summary); err != nil {
 				return nil, err
 			}
+			automatic := s.actor.ID > 0
+			if automatic && (summary.User != s.actor || summary.CommitID != s.head || summary.State != "CHANGES_REQUESTED") {
+				return nil, ErrUnauthorized
+			}
 			if summary.ID != s.id {
 				return nil, fmt.Errorf("the review differs from the selected discussion")
 			}
 			var comments []discussion
-			if err := client.Request(ctx, "GET", fmt.Sprintf("%s/comments?per_page=%d", review, maxFeedback+1), nil, &comments); err != nil {
+			if automatic {
+				raw, err := client.List(ctx, review+"/comments", "")
+				if err != nil {
+					return nil, err
+				}
+				for _, item := range raw {
+					var comment discussion
+					if err := json.Unmarshal(item, &comment); err != nil {
+						return nil, err
+					}
+					if comment.User != s.actor || comment.ReviewID != s.id {
+						return nil, ErrUnauthorized
+					}
+					comments = append(comments, comment)
+				}
+			} else if err := client.Request(ctx, "GET", fmt.Sprintf("%s/comments?per_page=%d", review, maxFeedback+1), nil, &comments); err != nil {
 				return nil, err
 			}
 			hasSummary := strings.TrimSpace(summary.Body) != ""
@@ -100,7 +139,7 @@ func loadFeedback(ctx context.Context, client *fixer.GitHubClient, repository st
 				return nil, fmt.Errorf("the selected review has no feedback")
 			}
 			if hasSummary {
-				if err := appendComment(s.anchor, summary); err != nil {
+				if err := appendComment(s.anchor, summary, automatic); err != nil {
 					return nil, err
 				}
 			}
@@ -108,7 +147,7 @@ func loadFeedback(ctx context.Context, client *fixer.GitHubClient, repository st
 				if comment.ID <= 0 || comment.PullAPIURL != pullAPI {
 					return nil, fmt.Errorf("a selected review comment belongs to another pull request")
 				}
-				if err := appendComment(fmt.Sprintf("#discussion_r%d", comment.ID), comment); err != nil {
+				if err := appendComment(fmt.Sprintf("#discussion_r%d", comment.ID), comment, automatic); err != nil {
 					return nil, err
 				}
 			}
@@ -126,7 +165,7 @@ func loadFeedback(ctx context.Context, client *fixer.GitHubClient, repository st
 			(s.kind == "issuecomment-" && comment.IssueURL != issueAPI) {
 			return nil, fmt.Errorf("a selected discussion belongs to another pull request")
 		}
-		if err := appendComment(s.anchor, comment); err != nil {
+		if err := appendComment(s.anchor, comment, false); err != nil {
 			return nil, err
 		}
 	}
