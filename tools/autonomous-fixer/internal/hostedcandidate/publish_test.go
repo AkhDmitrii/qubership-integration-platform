@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,6 +69,9 @@ type githubFixture struct {
 	pulls                            []json.RawMessage
 	writes, created                  int
 	updated                          int
+	refUpdates, staleRefReads        int
+	refUpdateErr                     error
+	rejectRefUpdate                  bool
 	loseCreateReply, removed         bool
 }
 
@@ -96,16 +100,20 @@ func (g *githubFixture) Request(ctx context.Context, method, path string, body, 
 		return assign(target, map[string]string{"default_branch": "main"})
 	case path == "/git/ref/heads/main":
 		if g.targetSHA != "" {
-			return assign(target, ref{object{g.targetSHA}})
+			return assign(target, ref{Object: object{g.targetSHA}})
 		}
-		return assign(target, ref{object{g.o.Base}})
+		return assign(target, ref{Object: object{g.o.Base}})
 	case path == "/compare/"+g.o.Base+"..."+g.targetSHA:
 		return assign(target, map[string]string{"status": g.comparisonStatus})
 	case strings.HasPrefix(path, "/git/ref/heads/"):
 		if g.branch == "" {
 			return &fixer.HTTPError{Status: 404}
 		}
-		return assign(target, ref{object{g.refSHA}})
+		if g.refUpdates > 0 && g.staleRefReads > 0 {
+			g.staleRefReads--
+			return assign(target, ref{Object: object{g.commitParent}})
+		}
+		return assign(target, ref{Object: object{g.refSHA}})
 	case path == "/git/commits/"+g.o.Base || (g.targetSHA != "" && path == "/git/commits/"+g.targetSHA):
 		return assign(target, commit{Tree: object{g.o.Base}})
 	case path == "/git/commits/"+g.tip:
@@ -124,11 +132,20 @@ func (g *githubFixture) Request(ctx context.Context, method, path string, body, 
 		g.tip = strings.Repeat("b", 40)
 		return assign(target, object{g.tip})
 	case method == "PATCH" && path == "/git/refs/heads/"+g.branch:
+		g.refUpdates++
 		if body.(map[string]any)["force"] != false || g.commitParent != g.refSHA {
 			return fmt.Errorf("not a fast-forward")
 		}
-		g.refSHA = body.(map[string]any)["sha"].(string)
-		return nil
+		if !g.rejectRefUpdate {
+			g.refSHA = body.(map[string]any)["sha"].(string)
+		}
+		if g.refUpdateErr != nil {
+			return g.refUpdateErr
+		}
+		return assign(target, map[string]any{
+			"ref":    "refs/heads/" + g.branch,
+			"object": map[string]string{"sha": g.refSHA, "type": "commit"},
+		})
 	case path == "/git/refs":
 		g.refSHA = body.(map[string]string)["sha"]
 		if g.refSHA == g.tip {
@@ -209,6 +226,47 @@ func TestCandidateRoundTripAndRepeatPublication(t *testing.T) {
 	if g.title != "fix: Handle binary input" || !strings.Contains(g.body, "## How to verify") ||
 		!strings.Contains(g.body, "The author report did not record an end\\-to\\-end decision") {
 		t.Fatal("an older report must identify its missing verification evidence", g.title, g.body)
+	}
+}
+
+func TestPublishConfirmsBranchUpdate(t *testing.T) {
+	o, c, tree := repo(t)
+	for _, scenario := range []struct {
+		name            string
+		staleRefReads   int
+		updateErr       error
+		rejectRefUpdate bool
+	}{
+		{name: "successful update with a stale read", staleRefReads: 1},
+		{name: "lost update reply", updateErr: fmt.Errorf("reply lost")},
+		{name: "rejected update", updateErr: &fixer.HTTPError{Status: 409}, rejectRefUpdate: true},
+		{name: "successful response with the old SHA", rejectRefUpdate: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			g := &githubFixture{
+				o: o, tree: tree, staleRefReads: scenario.staleRefReads,
+				refUpdateErr: scenario.updateErr, rejectRefUpdate: scenario.rejectRefUpdate,
+			}
+			ctx := context.Background()
+			published, err := Publish(ctx, g, c, o)
+			if scenario.rejectRefUpdate {
+				if err == nil || !strings.Contains(err.Error(), "publication branch did not advance") || g.created != 0 {
+					t.Fatalf("rejected update returned %v and created %d drafts", err, g.created)
+				}
+				if scenario.updateErr != nil && !errors.Is(err, scenario.updateErr) {
+					t.Fatalf("publish dropped the update error: %v", err)
+				}
+				return
+			}
+			if err != nil || published.Number != 27 || published.SHA != g.tip {
+				t.Fatalf("publish returned %+v, %v", published, err)
+			}
+			g.staleRefReads = 0
+			repeated, err := Publish(ctx, g, c, o)
+			if err != nil || repeated != published || g.refUpdates != 1 || g.created != 1 {
+				t.Fatalf("repeat returned %+v, %v after %d updates and %d drafts", repeated, err, g.refUpdates, g.created)
+			}
+		})
 	}
 }
 

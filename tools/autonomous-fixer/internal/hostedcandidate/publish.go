@@ -35,6 +35,7 @@ type object struct {
 	SHA string `json:"sha"`
 }
 type ref struct {
+	Name   string `json:"ref"`
 	Object object `json:"object"`
 }
 type commit struct {
@@ -113,6 +114,7 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 		}
 	}
 	branch := fmt.Sprintf("agent/fix/%d/%d-%d", o.Issue, o.Run, o.Attempt)
+	branchRef := "refs/heads/" + branch
 	reference := "/git/ref/heads/" + branch
 	var head ref
 	marker := fmt.Sprintf("<!-- qip-fix:%d:%d:%d -->", o.Issue, o.Run, o.Attempt)
@@ -125,7 +127,7 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 	}
 	err = api.Request(ctx, "GET", reference, nil, &head)
 	if missing(err) {
-		createErr := api.Request(ctx, "POST", "/git/refs", map[string]string{"ref": "refs/heads/" + branch, "sha": parent}, nil)
+		createErr := api.Request(ctx, "POST", "/git/refs", map[string]string{"ref": branchRef, "sha": parent}, nil)
 		if err = api.Request(ctx, "GET", reference, nil, &head); err != nil {
 			return out, fmt.Errorf("create publication branch at %s: %w", parent, errors.Join(createErr, err))
 		}
@@ -206,12 +208,18 @@ func Publish(ctx context.Context, api API, c Candidate, o Options) (Published, e
 		if err != nil {
 			return out, err
 		}
-		updateErr := api.Request(ctx, "PATCH", "/git/refs/heads/"+branch, map[string]any{"sha": tip.SHA, "force": false}, nil)
-		if err = api.Request(ctx, "GET", reference, nil, &head); err != nil {
-			return out, errors.Join(updateErr, err)
-		}
-		if head.Object.SHA == parent {
-			return out, errors.Join(updateErr, fmt.Errorf("publication branch did not advance"))
+		var updated ref
+		updateErr := api.Request(ctx, "PATCH", "/git/refs/heads/"+branch, map[string]any{"sha": tip.SHA, "force": false}, &updated)
+		// A ref read immediately after the update can still return the old SHA.
+		if updateErr == nil && updated.Name == branchRef && updated.Object.SHA == tip.SHA {
+			head = updated
+		} else {
+			if err = api.Request(ctx, "GET", reference, nil, &head); err != nil {
+				return out, errors.Join(updateErr, err)
+			}
+			if head.Object.SHA == parent {
+				return out, errors.Join(updateErr, fmt.Errorf("publication branch did not advance"))
+			}
 		}
 	}
 	if !sha.MatchString(head.Object.SHA) {
