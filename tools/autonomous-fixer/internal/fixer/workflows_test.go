@@ -139,3 +139,23 @@ func TestAutomaticRevisionUsesTheExistingRevisionWorkflow(t *testing.T) {
 		t.Fatal("both revision admission and publication must share the pull request's concurrency group")
 	}
 }
+
+func TestRevisionPullRequestPermissions(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "..", ".github", "workflows", "agent-work.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for job, permission := range map[string]string{
+		"admit-revision":   "write",
+		"work":             "read",
+		"publish-revision": "write",
+	} {
+		_, body, found := strings.Cut(string(data), "\n  "+job+":\n")
+		beforeSteps, _, _ := strings.Cut(body, "\n    steps:")
+		_, permissions, _ := strings.Cut(beforeSteps, "\n    permissions:\n")
+		if !found || !strings.Contains(permissions, "      issues: read\n") ||
+			!strings.Contains(permissions, "      pull-requests: "+permission+"\n") {
+			t.Errorf("%s needs read access to issues and %s access to pull requests", job, permission)
+		}
+	}
+}
