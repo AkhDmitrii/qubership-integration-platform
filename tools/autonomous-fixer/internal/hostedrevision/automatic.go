@@ -133,22 +133,7 @@ func (c *Controller) currentFailures(ctx context.Context, pr agentpr.PullRequest
 		return nil, err
 	}
 	snapshot.Diagnostics = append(snapshot.Diagnostics, diagnostics...)
-	plan, err := agentci.PlanRepair(ctx, c.cfg.Client, snapshot)
-	if err != nil || !plan.Ready {
-		return nil, err
-	}
-	plan.Failures = slices.DeleteFunc(plan.Failures, func(current autorequest.Failure) bool {
-		return slices.ContainsFunc(consumed, func(prior autorequest.Failure) bool {
-			return plan.MatchesFailure(current, prior)
-		})
-	})
-	var failures []autorequest.Failure
-	for _, want := range requested {
-		if failure, found := plan.ResolveFailure(want); found {
-			failures = append(failures, failure)
-		}
-	}
-	return failures, nil
+	return agentci.RecheckFailures(ctx, c.cfg.Client, snapshot, requested, consumed)
 }
 
 func (c *Controller) prepareAutomatic(ctx context.Context, actors string, pr agentpr.PullRequest, command fixer.Comment, seen map[int64]Assignment, comments []fixer.Comment, a *Assignment) error {

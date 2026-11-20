@@ -41,6 +41,8 @@ type fixture struct {
 	reviewer       fixer.GitHubUser
 	runs           map[int64]fixer.WorkflowRun
 	ciConclusion   string
+	ciRunStatus    string
+	e2eRerunning   bool
 	requiredChecks string
 }
 
@@ -88,7 +90,7 @@ func revisionFixture(t *testing.T) *fixture {
 		},
 		issue: issue, origin: origin, state: fixer.Comment{ID: 50, User: bot, Body: canonical}, bot: bot,
 		permission: "write", allowlist: user.Login, feedbackPull: 4, feedbackBody: "Handle focus after closing the dialog.",
-		comments: []fixer.Comment{}, comparison: "ahead", status: "in_progress", commands: map[int64]fixer.Comment{13: command},
+		comments: []fixer.Comment{}, comparison: "ahead", status: "in_progress", ciRunStatus: "completed", commands: map[int64]fixer.Comment{13: command},
 		commandPull: 4, runs: make(map[int64]fixer.WorkflowRun),
 	}
 	server := httptest.NewServer(http.HandlerFunc(f.serve))
@@ -200,17 +202,27 @@ func (f *fixture) serve(w http.ResponseWriter, r *http.Request) {
 	case p == "/branches/main":
 		send(map[string]any{})
 	case p == "/commits/"+f.pr.Head.SHA+"/check-runs":
-		send(map[string]any{"check_runs": []map[string]any{{
+		checks := []map[string]any{{
 			"id": 87, "name": "Compile", "head_sha": f.pr.Head.SHA, "status": "completed", "conclusion": f.ciConclusion,
 			"check_suite": map[string]any{"id": 77}, "app": map[string]any{"id": 1234, "slug": "github-actions"},
-		}}})
+		}}
+		if f.e2eRerunning {
+			checks = append(checks, map[string]any{"id": 88, "name": "E2E", "head_sha": f.pr.Head.SHA, "status": "queued",
+				"check_suite": map[string]any{"id": 78}, "app": map[string]any{"id": 1234, "slug": "github-actions"}})
+		}
+		send(map[string]any{"check_runs": checks})
 	case p == "/commits/"+f.pr.Head.SHA+"/statuses":
 		send([]any{})
 	case p == "/actions/runs" && r.URL.Query().Get("head_sha") == f.pr.Head.SHA:
-		send(map[string]any{"workflow_runs": []map[string]any{{
+		runs := []map[string]any{{
 			"id": 767, "workflow_id": 83, "name": "UI build", "head_sha": f.pr.Head.SHA, "check_suite_id": 77,
-			"run_attempt": 1, "event": "pull_request", "status": "completed", "conclusion": f.ciConclusion,
-		}}})
+			"run_attempt": 1, "event": "pull_request", "status": f.ciRunStatus, "conclusion": f.ciConclusion,
+		}}
+		if f.e2eRerunning {
+			runs = append(runs, map[string]any{"id": 768, "workflow_id": 84, "name": "E2E PR", "head_sha": f.pr.Head.SHA,
+				"check_suite_id": 78, "event": "pull_request", "run_attempt": 2, "status": "queued"})
+		}
+		send(map[string]any{"workflow_runs": runs})
 	case p == "/actions/jobs/87":
 		send(map[string]any{"id": 87, "run_id": 767, "head_sha": f.pr.Head.SHA, "status": "completed", "conclusion": f.ciConclusion})
 	case p == "/check-runs/87/annotations":

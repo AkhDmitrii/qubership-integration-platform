@@ -279,6 +279,48 @@ func TestAutomaticCIWaitsForRequiredChecksAndSkipsGreenReruns(t *testing.T) {
 	}
 }
 
+func TestAutomaticRevisionKeepsFailedJobWhileUnrelatedWorkflowRetries(t *testing.T) {
+	f, request := automaticFixture(t)
+	ctx := t.Context()
+	f.change(func() { f.ciConclusion = "failure" })
+	read := func() agentci.RepairPlan {
+		t.Helper()
+		snapshot, err := agentci.Read(ctx, f.cfg.Client, request.Head, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := agentci.PlanRepair(ctx, f.cfg.Client, snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan
+	}
+	first := read()
+	if !first.Ready || len(first.Failures) != 1 {
+		t.Fatalf("initial CI plan = %+v", first)
+	}
+	request.Reviews, request.Failures = nil, first.Failures
+	c := openFixture(t, f.dispatch(t, request, 123, 13))
+	f.change(func() { f.e2eRerunning = true })
+	if read().Ready {
+		t.Fatal("the coordinator would dispatch a new batch while E2E is queued")
+	}
+	f.change(func() { f.requiredChecks = "E2E" })
+	if ok, err := c.OpenRevision(ctx); ok || !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("pending required E2E = %t, %v", ok, err)
+	}
+	f.change(func() { f.requiredChecks = "" })
+	a := accepted(t, c)
+	work, _, err := c.VerifyWork(ctx, a)
+	if err != nil || !slices.Equal(work.FailureKeys, []string{first.Failures[0].Key}) || len(work.Feedback) != 1 {
+		t.Fatalf("revision with pending optional E2E = %+v, %v", work, err)
+	}
+	f.change(func() { f.ciRunStatus = "queued" })
+	if _, err := c.Verify(ctx, a); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("selected workflow rerunning = %v", err)
+	}
+}
+
 func TestAutomaticRevisionRecoversLargeFeedbackForWorker(t *testing.T) {
 	f, request := automaticFixture(t)
 	f.change(func() {

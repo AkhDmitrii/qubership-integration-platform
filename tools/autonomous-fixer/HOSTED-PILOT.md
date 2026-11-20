@@ -68,6 +68,8 @@ With `AGENT_ENABLED=true` and `AGENT_MODE=pilot`, automatic follow-up applies to
 
 The coordinator waits for the required checks and includes failures from optional checks that have finished. If the branch has no required checks, it waits for all reported checks. When the same check runs on both the PR head and the test merge, the coordinator uses its test merge result. Checks that run only on the head still count.
 
+After dispatch, the worker checks the requested failures again before accepting a revision. Only diagnostics still present in completed failing jobs qualify for admission. The worker rechecks the accepted diagnostics before publication. An unrelated optional workflow may rerun in the meantime. Explicitly required checks must still finish.
+
 The engineering author receives the job link and diagnostic evidence for each identifiable test, build, or lint failure. When review feedback and CI failures arrive together, the author handles both in one revision. If a check has failed while another required check is running, the coordinator defers a new review. Once the review is ten minutes old, the next workflow event, manual run, or daily scan can send it to the author while CI finishes.
 
 A confirmed runner or service failure can trigger one retry of the failed jobs without calling a model. The coordinator leaves a note on the PR when a failure needs manual diagnosis or the same diagnostic returns after an automatic repair. If another test starts failing in that job, the author can address the new test in the same pass. For source errors, the comparison uses the reported file and location. Moving the error to a different line can trigger a new repair.

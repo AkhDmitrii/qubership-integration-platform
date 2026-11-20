@@ -21,16 +21,41 @@ type RepairPlan struct {
 }
 
 func PlanRepair(ctx context.Context, client *fixer.GitHubClient, snapshot Snapshot) (RepairPlan, error) {
+	return planRepair(ctx, client, snapshot, true)
+}
+
+// RecheckFailures validates the diagnostics in a dispatched request against current CI.
+// An unrelated optional check may have restarted since the coordinator formed the batch.
+func RecheckFailures(ctx context.Context, client *fixer.GitHubClient, snapshot Snapshot, requested, consumed []autorequest.Failure) ([]autorequest.Failure, error) {
+	plan, err := planRepair(ctx, client, snapshot, false)
+	if err != nil || !plan.Ready {
+		return nil, err
+	}
+	plan.Failures = slices.DeleteFunc(plan.Failures, func(current autorequest.Failure) bool {
+		return slices.ContainsFunc(consumed, func(prior autorequest.Failure) bool {
+			return plan.MatchesFailure(current, prior)
+		})
+	})
+	var failures []autorequest.Failure
+	for _, want := range requested {
+		if failure, found := plan.ResolveFailure(want); found {
+			failures = append(failures, failure)
+		}
+	}
+	return failures, nil
+}
+
+func planRepair(ctx context.Context, client *fixer.GitHubClient, snapshot Snapshot, newBatch bool) (RepairPlan, error) {
 	var plan RepairPlan
 	if len(snapshot.Diagnostics) != 0 {
 		return plan, nil
 	}
 	checks := snapshot.SelectedChecks()
-	hasRequired := slices.ContainsFunc(checks, func(check Check) bool { return check.Required })
+	waitForAll := newBatch && !slices.ContainsFunc(checks, func(check Check) bool { return check.Required })
 	var completed []Check
 	for _, check := range checks {
 		if !terminalCheck(check.Status) || check.Workflow != "" && check.action.Status != "completed" {
-			if check.Required || !hasRequired {
+			if check.Required || waitForAll {
 				return plan, nil
 			}
 			continue
