@@ -106,6 +106,15 @@ describe("DocumentationSearch", () => {
     expect(mockSearch).not.toHaveBeenCalled();
   });
 
+  it("announces an empty Help search to screen readers", async () => {
+    render(<DocumentationSearch />);
+    await typeAndSearch("nonexistent");
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "No matching help topics",
+    );
+  });
+
   it("debounces search calls", async () => {
     mockSearch.mockResolvedValue([{ ref: 0, score: 1, terms: ["test"] }]);
     mockLoadNames.mockResolvedValue({ 0: ["Overview"] });
