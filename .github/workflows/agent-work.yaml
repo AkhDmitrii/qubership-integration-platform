@@ -114,8 +114,8 @@ jobs:
       actions: read
       checks: read
       statuses: read
-      issues: write
-      pull-requests: read
+      issues: read
+      pull-requests: write
     outputs:
       admitted: ${{ steps.admit.outputs.admitted }}
     concurrency:
@@ -393,8 +393,8 @@ jobs:
       actions: read
       checks: read
       statuses: read
-      issues: write
-      pull-requests: read
+      issues: read
+      pull-requests: write
     concurrency:
       group: qip-agent-revision-${{ github.event.issue.number || inputs.auto_pr }}
       queue: max
