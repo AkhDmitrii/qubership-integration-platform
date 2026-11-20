@@ -104,7 +104,7 @@ export function getStaticBrowserTabTitle(
   }
 
   if (pathname === "/doc" || pathname.startsWith("/doc/")) {
-    return "Help";
+    return "Helper";
   }
 
   const servicesRoute = parseServiceRoute(pathname);
