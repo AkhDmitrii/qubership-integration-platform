@@ -296,7 +296,7 @@ export const DocumentationSearch: React.FC<DocumentationSearchProps> = ({
       )}
       {!isLoading && query.trim() && displayResults.length === 0 && (
         <div className={styles.emptyState}>
-          <Text type="secondary">No results found</Text>
+          <Text type="secondary">No matching help topics</Text>
         </div>
       )}
     </div>

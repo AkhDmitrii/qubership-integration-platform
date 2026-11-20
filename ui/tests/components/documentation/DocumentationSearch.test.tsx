@@ -147,11 +147,11 @@ describe("DocumentationSearch", () => {
     expect(screen.getByText("Overview")).toBeInTheDocument();
   });
 
-  it("shows 'No results found' when search returns empty", async () => {
+  it("shows 'No matching help topics' when search returns empty", async () => {
     render(<DocumentationSearch />);
     await typeAndSearch("nonexistent");
 
-    expect(screen.getByText("No results found")).toBeInTheDocument();
+    expect(screen.getByText("No matching help topics")).toBeInTheDocument();
   });
 
   it("navigates on result click", async () => {
@@ -208,7 +208,9 @@ describe("DocumentationSearch", () => {
     });
 
     expect(screen.queryByText("Overview")).not.toBeInTheDocument();
-    expect(screen.queryByText("No results found")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No matching help topics"),
+    ).not.toBeInTheDocument();
   });
 
   it("handles search errors gracefully", async () => {
@@ -218,7 +220,7 @@ describe("DocumentationSearch", () => {
     render(<DocumentationSearch />);
     await typeAndSearch("error");
 
-    expect(screen.getByText("No results found")).toBeInTheDocument();
+    expect(screen.getByText("No matching help topics")).toBeInTheDocument();
     expect(spy).toHaveBeenCalledWith("Search failed:", expect.any(Error));
     spy.mockRestore();
   });
