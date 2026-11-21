@@ -1480,7 +1480,7 @@ const Chains = () => {
               <CompactSearch
                 value={searchString}
                 onChange={setSearchString}
-                placeholder="Search chains and folders..."
+                placeholder="Search"
                 className={commonStyles["searchField"]}
               />
             </Flex>
