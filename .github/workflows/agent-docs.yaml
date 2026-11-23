@@ -251,15 +251,10 @@ jobs:
       - name: Run documentation work
         id: work
         env:
-          FIXTURE_ISSUE: ${{ inputs.issue }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           DOCS_MODEL: ${{ vars.AGENT_DOCS_MODEL || 'openrouter/openai/gpt-6-luna' }}
           DOCS_EFFORT: ${{ vars.AGENT_DOCS_EFFORT || 'medium' }}
         run: |
-          if [[ "$FIXTURE_ISSUE" == 22 && "$GITHUB_REPOSITORY" == 'AkhDmitrii/qubership-integration-platform' ]]; then
-            echo 'Fork acceptance check: stop work after the documentation claim.'
-            exit 1
-          fi
           "$RUNNER_TEMP/docs-agent" work --prepared "$RUNNER_TEMP/prepared" \
             --source "$GITHUB_WORKSPACE/source" --workspace "$RUNNER_TEMP/docs-candidate" \
             --output "$RUNNER_TEMP/docs-result" --handoff "$RUNNER_TEMP/docs-handoff" \
