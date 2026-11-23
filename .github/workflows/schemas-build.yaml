@@ -68,5 +68,5 @@ jobs:
       - name: Build schemas
         run: npm -w @netcracker/qip-schemas run build
 
-      - name: Test
+      - name: Run schema tests
         run: npm -w @netcracker/qip-schemas test
