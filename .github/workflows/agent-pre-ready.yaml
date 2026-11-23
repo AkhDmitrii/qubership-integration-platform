@@ -8,8 +8,12 @@ on:
         description: Open issue number
         type: string
         required: true
+      assessment_snapshot:
+        description: SHA-256 printed by the snapshot capture command
+        type: string
+        required: true
       engineer_decision:
-        description: Your assessment before seeing the recommendation
+        description: Your assessment of that snapshot before seeing the recommendation
         type: choice
         required: true
         options: [uncertain, ready, diagnose, request_info]
@@ -29,6 +33,7 @@ jobs:
       issues: read
     env:
       ISSUE_NUMBER: ${{ github.event_name == 'issues' && github.event.issue.number || inputs.issue }}
+      ASSESSMENT_SNAPSHOT: ${{ inputs.assessment_snapshot }}
       ENGINEER_DECISION: ${{ inputs.engineer_decision }}
     steps:
       - name: Validate the issue number
@@ -62,13 +67,27 @@ jobs:
         if: steps.snapshot.outputs.eligible == 'true'
         working-directory: tools/autonomous-fixer
         run: go build -trimpath -o "$RUNNER_TEMP/jev-task" ./cmd/jev-task
+      - name: Match the engineer's assessment snapshot
+        id: assessment
+        if: github.event_name == 'workflow_dispatch' && steps.snapshot.outputs.eligible == 'true'
+        run: |
+          triage="$RUNNER_TEMP/triage"
+          "$RUNNER_TEMP/jev-task" --packet "$triage/packet.json" --output "$triage/request"
+          captured=$(python3 tools/autonomous-fixer/scripts/pre_ready.py snapshot "$triage")
+          if [[ "$captured" == "$ASSESSMENT_SNAPSHOT" ]]; then
+            echo 'matches=true' >> "$GITHUB_OUTPUT"
+          fi
       - name: Classify the issue
-        if: steps.snapshot.outputs.eligible == 'true'
+        if: >-
+          steps.snapshot.outputs.eligible == 'true' &&
+          (github.event_name == 'issues' || steps.assessment.outputs.matches == 'true')
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: '"$RUNNER_TEMP/jev-task" --packet "$RUNNER_TEMP/triage/packet.json" --output "$RUNNER_TEMP/triage/jev" --live'
       - name: Recheck the issue
-        if: always() && steps.snapshot.outputs.eligible == 'true'
+        if: >-
+          always() && steps.snapshot.outputs.eligible == 'true' &&
+          (github.event_name == 'issues' || steps.assessment.outputs.matches == 'true')
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER" > "$RUNNER_TEMP/triage/rechecked.json" && mv "$RUNNER_TEMP/triage/rechecked.json" "$RUNNER_TEMP/triage/current.json"
@@ -81,5 +100,8 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: pre-ready-triage-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/triage/recommendation.md
+          path: |
+            ${{ runner.temp }}/triage/recommendation.md
+            ${{ runner.temp }}/triage/agreement.json
+            ${{ runner.temp }}/triage/reviewed-snapshot.json
           if-no-files-found: error
