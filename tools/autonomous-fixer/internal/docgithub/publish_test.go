@@ -26,6 +26,7 @@ type publicationAPI struct {
 	prFiles                                          []map[string]string
 	viewerLogin                                      string
 	dropComment                                      bool
+	ignoreCommentPatch                               bool
 	plan                                             Plan
 	state, project, head, branch                     string
 	mergeSHA, mergeHead                              string
@@ -191,8 +192,10 @@ func (a *publicationAPI) serve(w http.ResponseWriter, r *http.Request) {
 			if strconv.FormatInt(a.comments[i].ID, 10) != strings.TrimPrefix(path, "/issues/comments/") {
 				continue
 			}
-			a.comments[i].Body = body.Body
-			recordPublication(body.Body)
+			if !a.ignoreCommentPatch {
+				a.comments[i].Body = body.Body
+				recordPublication(body.Body)
+			}
 			write(a.comments[i])
 			return
 		}
@@ -760,6 +763,45 @@ func TestDocsPRWaitsForMergeAndRecoversUncertainCreate(t *testing.T) {
 	}
 	if a.doneCalls != 1 || a.pr.Body != prBody || strings.Contains(a.comments[0].Body, "<sub>🤖") {
 		t.Fatal("merge completion repeated the signature or updated the PR")
+	}
+}
+
+func TestSaveStateVerifiesPRURL(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		ignorePatch bool
+	}{
+		{name: "record missing URL"},
+		{name: "reject stale readback", ignorePatch: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			plan, _, _ := publicationFixture(t, true)
+			client, api := apiFixture(t, plan)
+			p := &publisher{client: client, plan: plan}
+			state := Publication{Decision: "needed", Status: "awaiting-merge", PRNumber: 3}
+			if err := p.saveState(t.Context(), state); err != nil {
+				t.Fatal(err)
+			}
+
+			api.ignoreCommentPatch = tt.ignorePatch
+			state.PRURL = "https://github.com/org/repo/pull/3"
+			err := p.saveState(t.Context(), state)
+			if tt.ignorePatch {
+				if err == nil || err.Error() != "documentation state readback differs" {
+					t.Fatalf("expected a readback mismatch, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.state.PRURL != state.PRURL {
+				t.Fatalf("publication state has PR URL %q, want %q", p.state.PRURL, state.PRURL)
+			}
+			if !strings.Contains(api.comments[0].Body, "[Draft documentation PR]("+state.PRURL+")") {
+				t.Fatal("publication comment has no draft PR link")
+			}
+		})
 	}
 }
 

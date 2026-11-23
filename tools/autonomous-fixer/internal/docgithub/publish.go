@@ -294,7 +294,7 @@ func (p *publisher) saveState(ctx context.Context, state Publication) error {
 		path = fmt.Sprintf("/issues/comments/%d", commentID)
 		action = fmt.Sprintf("update-state-%s-%s", state.Status, Digest(state))
 	}
-	if p.state.CommentID > 0 && p.state.Status == state.Status && p.state.Decision == state.Decision && p.state.CandidateDigest == state.CandidateDigest && p.state.Branch == state.Branch && p.state.CommitSHA == state.CommitSHA && p.state.MergedHeadSHA == state.MergedHeadSHA && p.state.UpdatedAfterPublication == state.UpdatedAfterPublication && p.state.PRNumber == state.PRNumber && p.state.CloseAttempted == state.CloseAttempted && p.state.ProjectDoneAttempted == state.ProjectDoneAttempted && p.state.IssueComment == state.IssueComment && p.state.RunSignature == state.RunSignature {
+	if p.state.CommentID > 0 && samePublicationState(p.state, state) {
 		return p.journal(action, "observed")
 	}
 	if e := p.begin(action); e != nil {
@@ -302,12 +302,11 @@ func (p *publisher) saveState(ctx context.Context, state Publication) error {
 	}
 	var response issueComment
 	requestErr := p.client.Request(ctx, method, path, map[string]string{"body": body}, &response)
-	expected := state
 	found, e := p.readState(ctx)
 	if e != nil {
 		return e
 	}
-	if !found || p.state.Status != expected.Status || p.state.Decision != expected.Decision || p.state.CandidateDigest != expected.CandidateDigest || p.state.CommitSHA != expected.CommitSHA || p.state.MergedHeadSHA != expected.MergedHeadSHA || p.state.UpdatedAfterPublication != expected.UpdatedAfterPublication || p.state.PRNumber != expected.PRNumber || p.state.Branch != expected.Branch || p.state.CloseAttempted != expected.CloseAttempted || p.state.ProjectDoneAttempted != expected.ProjectDoneAttempted || p.state.IssueComment != expected.IssueComment || p.state.RunSignature != expected.RunSignature {
+	if !found || !samePublicationState(p.state, state) {
 		if requestErr != nil {
 			return fmt.Errorf("state update result is uncertain: %w", requestErr)
 		}
@@ -315,6 +314,14 @@ func (p *publisher) saveState(ctx context.Context, state Publication) error {
 	}
 	return p.journal(action, "observed")
 }
+
+func samePublicationState(a, b Publication) bool {
+	// readState validates the plan and takes the comment ID from GitHub.
+	a.Plan, b.Plan = nil, nil
+	a.CommentID, b.CommentID = 0, 0
+	return a == b
+}
+
 func notFound(err error) bool { var h *fixer.HTTPError; return errors.As(err, &h) && h.Status == 404 }
 
 func documentationSignature(runDir string, candidate Candidate) (agentsignature.Signature, error) {
