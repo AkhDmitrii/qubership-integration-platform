@@ -106,6 +106,46 @@ describe("DocumentationSearch", () => {
     expect(mockSearch).not.toHaveBeenCalled();
   });
 
+  it("announces an empty Help search to screen readers", async () => {
+    render(<DocumentationSearch />);
+    const status = screen.getByRole("status");
+    expect(status).toBeEmptyDOMElement();
+    await typeAndSearch("nonexistent");
+
+    expect(status).toHaveTextContent("No matching help topics");
+
+    fireEvent.change(screen.getByPlaceholderText("Search documentation..."), {
+      target: { value: "" },
+    });
+
+    expect(status).toBeEmptyDOMElement();
+    expect(
+      screen.queryByText("No matching help topics"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clears a no-match announcement while a new search is pending", async () => {
+    const { container } = render(<DocumentationSearch />);
+    await typeAndSearch("first-query");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "No matching help topics",
+    );
+
+    mockSearch.mockReturnValueOnce(new Promise(() => {}));
+    fireEvent.change(screen.getByPlaceholderText("Search documentation..."), {
+      target: { value: "second-query" },
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+    });
+
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(
+      screen.queryByText("No matching help topics"),
+    ).not.toBeInTheDocument();
+    expect(container.querySelector(".ant-spin")).toBeInTheDocument();
+  });
+
   it("debounces search calls", async () => {
     mockSearch.mockResolvedValue([{ ref: 0, score: 1, terms: ["test"] }]);
     mockLoadNames.mockResolvedValue({ 0: ["Overview"] });
@@ -145,13 +185,6 @@ describe("DocumentationSearch", () => {
 
     expect(screen.getByText("Service Call")).toBeInTheDocument();
     expect(screen.getByText("Overview")).toBeInTheDocument();
-  });
-
-  it("shows 'No results found' when search returns empty", async () => {
-    render(<DocumentationSearch />);
-    await typeAndSearch("nonexistent");
-
-    expect(screen.getByText("No results found")).toBeInTheDocument();
   });
 
   it("navigates on result click", async () => {
@@ -208,7 +241,9 @@ describe("DocumentationSearch", () => {
     });
 
     expect(screen.queryByText("Overview")).not.toBeInTheDocument();
-    expect(screen.queryByText("No results found")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No matching help topics"),
+    ).not.toBeInTheDocument();
   });
 
   it("handles search errors gracefully", async () => {
@@ -219,6 +254,7 @@ describe("DocumentationSearch", () => {
     await typeAndSearch("error");
 
     expect(screen.getByText("No results found")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
     expect(spy).toHaveBeenCalledWith("Search failed:", expect.any(Error));
     spy.mockRestore();
   });
