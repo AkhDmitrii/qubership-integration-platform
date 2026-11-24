@@ -1,7 +1,13 @@
 /**
  * @jest-environment jsdom
  */
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import "@testing-library/jest-dom";
 
 const mockNavigate = jest.fn();
@@ -130,6 +136,79 @@ describe("DocumentationPage", () => {
       expect(screen.getByTestId("result")).toBeInTheDocument();
       expect(screen.getByText("Document not found")).toBeInTheDocument();
     });
+  });
+
+  test("should keep the current document when an earlier request returns 404", async () => {
+    let resolveChainsRequest!: (response: unknown) => void;
+    const chainsRequest = new Promise((resolve) => {
+      resolveChainsRequest = resolve;
+    });
+    (global.fetch as jest.Mock)
+      .mockReturnValueOnce(chainsRequest)
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve("# Services"),
+        headers: new Map([["content-type", "text/markdown"]]),
+      });
+
+    const { rerender } = render(<DocumentationPage />);
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    mockDocPath = "02__Services/page";
+    mockLocationPathname = "/doc/02__Services/page";
+    rerender(<DocumentationPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("doc-viewer")).toHaveTextContent("# Services");
+    });
+
+    await act(async () => {
+      resolveChainsRequest({
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+      });
+      await chainsRequest;
+    });
+    expect(screen.getByTestId("doc-viewer")).toHaveTextContent("# Services");
+  });
+
+  test("should keep the current document when an earlier request succeeds", async () => {
+    let resolveChainsContent!: (content: string) => void;
+    const chainsContentPromise = new Promise<string>((resolve) => {
+      resolveChainsContent = resolve;
+    });
+    const chainsContent = jest.fn(() => chainsContentPromise);
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        text: chainsContent,
+        headers: new Map([["content-type", "text/markdown"]]),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve("# Services"),
+        headers: new Map([["content-type", "text/markdown"]]),
+      });
+
+    const { rerender } = render(<DocumentationPage />);
+    await waitFor(() => {
+      expect(chainsContent).toHaveBeenCalledTimes(1);
+    });
+
+    mockDocPath = "02__Services/page";
+    mockLocationPathname = "/doc/02__Services/page";
+    rerender(<DocumentationPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("doc-viewer")).toHaveTextContent("# Services");
+    });
+
+    await act(async () => {
+      resolveChainsContent("# Chains");
+      await chainsContentPromise;
+    });
+    expect(screen.getByTestId("doc-viewer")).toHaveTextContent("# Services");
   });
 
   test("shows error with status text on non-404 failure", async () => {
